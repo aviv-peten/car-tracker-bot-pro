@@ -8,20 +8,22 @@ from collections import defaultdict
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import re
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Conversation states
-START, CAR_NUMBER, PICKUP, DROPOFF, NOTE, JOB_TYPE, NEXT_OR_END = range(7)
+START, CAR_NUMBER, PICKUP, DROPOFF, NOTE, JOB_TYPE, NEXT_OR_END, EMAIL_MANAGEMENT, EMAIL_ADD, EMAIL_REMOVE = range(10)
 
 # Data storage (in production, use a proper database)
 user_data = {}
 monthly_stats = defaultdict(int)
+email_lists = {}  # Store email lists per user
 
-# Email configuration
-EMAIL_RECIPIENTS = [
+# Default email configuration
+DEFAULT_EMAIL_RECIPIENTS = [
     "email1@example.com",
     "email2@example.com", 
     "email3@example.com"
@@ -41,46 +43,71 @@ JOB_TYPES = [
     "משימת טסט"
 ]
 
+def format_car_number(car_number):
+    """Format car number from 11111111 to 111-11-111"""
+    # Remove any existing formatting
+    cleaned = re.sub(r'[^0-9]', '', car_number)
+    
+    # Check if it's exactly 8 digits
+    if len(cleaned) == 8:
+        return f"{cleaned[:3]}-{cleaned[3:5]}-{cleaned[5:]}"
+    else:
+        # Return original if not 8 digits
+        return car_number
+
 def load_data():
     """Load user data from file"""
-    global user_data, monthly_stats
+    global user_data, monthly_stats, email_lists
     try:
         if os.path.exists('user_data.json'):
             with open('user_data.json', 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 user_data = data.get('user_data', {})
                 monthly_stats = defaultdict(int, data.get('monthly_stats', {}))
+                email_lists = data.get('email_lists', {})
         else:
             user_data = {}
             monthly_stats = defaultdict(int)
+            email_lists = {}
     except Exception as e:
         logger.error(f"Error loading data: {e}")
         user_data = {}
         monthly_stats = defaultdict(int)
+        email_lists = {}
 
 def save_data():
     """Save user data to file"""
     try:
         data = {
             'user_data': user_data,
-            'monthly_stats': dict(monthly_stats)
+            'monthly_stats': dict(monthly_stats),
+            'email_lists': email_lists
         }
         with open('user_data.json', 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error saving data: {e}")
 
-def send_daily_email(daily_cars, job_stats):
+def get_user_emails(user_id):
+    """Get email list for specific user, return default if not set"""
+    return email_lists.get(user_id, DEFAULT_EMAIL_RECIPIENTS.copy())
+
+def send_daily_email(user_id, daily_cars, job_stats):
     """Send daily summary via email"""
     try:
         if not EMAIL_USER or not EMAIL_PASSWORD:
             logger.warning("Email credentials not configured")
-            return
+            return False
+            
+        recipients = get_user_emails(user_id)
+        if not recipients:
+            logger.warning("No email recipients configured")
+            return False
             
         # Create email content
-        subject = f"Daily Car Report - {datetime.now().strftime('%Y-%m-%d')}"
+        subject = f"דוח רכבים יומי - {datetime.now().strftime('%Y-%m-%d')}"
         
-        body = f"Daily Car Report - {datetime.now().strftime('%Y-%m-%d')}\n\n"
+        body = f"דוח רכבים יומי - {datetime.now().strftime('%Y-%m-%d')}\n\n"
         body += f"סך כולל המשימות: {len(daily_cars)}\n"
         
         # Job type statistics
@@ -114,7 +141,7 @@ def send_daily_email(daily_cars, job_stats):
         server.starttls()
         server.login(EMAIL_USER, EMAIL_PASSWORD)
         
-        for recipient in EMAIL_RECIPIENTS:
+        for recipient in recipients:
             msg['To'] = recipient
             text = msg.as_string()
             server.sendmail(EMAIL_USER, recipient, text)
@@ -122,9 +149,11 @@ def send_daily_email(daily_cars, job_stats):
         
         server.quit()
         logger.info("Daily email sent successfully")
+        return True
         
     except Exception as e:
         logger.error(f"Error sending email: {e}")
+        return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the car tracking session"""
@@ -137,12 +166,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             'current_car': {}
         }
     
+    # Initialize email list if not exists
+    if user_id not in email_lists:
+        email_lists[user_id] = DEFAULT_EMAIL_RECIPIENTS.copy()
+    
     # Clear current car data for new session
     user_data[user_id]['current_car'] = {}
     
     await update.message.reply_text(
-        "🚗 מעקב רכבים התחיל!\n\n"
-        "אנא הכנס מספר רכב:"
+        "🚗 מעקב רכבים החל!\n\n"
+        "אנא הכנס מספר רכב (8 ספרות):"
     )
     
     return CAR_NUMBER
@@ -150,14 +183,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def get_car_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Get car number from user"""
     user_id = str(update.effective_user.id)
-    car_number = update.message.text.strip()
+    car_number_input = update.message.text.strip()
     
-    user_data[user_id]['current_car']['car_number'] = car_number
+    # Format the car number
+    formatted_car_number = format_car_number(car_number_input)
+    
+    user_data[user_id]['current_car']['car_number'] = formatted_car_number
     user_data[user_id]['current_car']['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     await update.message.reply_text(
-        f"🚗 מספר רכב: {car_number}\n\n"
-        "אנא הכנס מיקום איסוף:"
+        f"🚗 מספר רכב: {formatted_car_number}\n\n"
+        "אנא הכנס כתובת איסוף:"
     )
     
     return PICKUP
@@ -170,8 +206,8 @@ async def get_pickup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_data[user_id]['current_car']['pickup'] = pickup
     
     await update.message.reply_text(
-        f"📍 איסוף מ: {pickup}\n\n"
-        "אנא הכנס מיקום הורדה:"
+        f"📍 איסוף: {pickup}\n\n"
+        "אנא הכנס כתובת יעד:"
     )
     
     return DROPOFF
@@ -184,7 +220,7 @@ async def get_dropoff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user_data[user_id]['current_car']['dropoff'] = dropoff
     
     await update.message.reply_text(
-        f"📍 הורדה ב: {dropoff}\n\n"
+        f"📍 יעד: {dropoff}\n\n"
         "📝 אנא הכנס הערה:"
     )
     
@@ -238,10 +274,10 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     car_info = user_data[user_id]['current_car']
     await update.message.reply_text(
-        f"✅ רכב נרשם בהצלחה!\n\n"
+        f"✅ הרכב נרשם!\n\n"
         f"🚗 {car_info['car_number']}\n"
-        f"📍 מ: {car_info['pickup']}\n"
-        f"📍 אל: {car_info['dropoff']}\n"
+        f"📍 מאיפה: {car_info['pickup']}\n"
+        f"📍 לאיפה: {car_info['dropoff']}\n"
         f"🏷️ סוג משימה: {car_info['job_type']}\n"
         f"📝 הערה: {car_info['note'] if car_info['note'] else 'אין'}\n"
         f"⏰ זמן: {car_info['timestamp']}\n\n"
@@ -260,7 +296,7 @@ async def handle_next_or_end(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_data[user_id]['current_car'] = {}
         await update.message.reply_text(
             "🚗 רכב הבא מוכן!\n\n"
-            "אנא הכנס מספר רכב:",
+            "אנא הכנס מספר רכב (8 ספרות):",
             reply_markup=ReplyKeyboardRemove()
         )
         return CAR_NUMBER
@@ -271,14 +307,14 @@ async def handle_next_or_end(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return NEXT_OR_END
 
 async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """End the day and show summary"""
+    """End the day and show summary, then ask about email management"""
     user_id = str(update.effective_user.id)
     daily_cars = user_data[user_id]['daily_cars']
     
     if not daily_cars:
         await update.message.reply_text(
             "📊 לא נרשמו רכבים היום!\n\n"
-            "השתמש ב /start כדי להתחיל מעקב.",
+            "השתמש ב-/start כדי להתחיל מעקב.",
             reply_markup=ReplyKeyboardRemove()
         )
         return ConversationHandler.END
@@ -313,8 +349,8 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Monthly stats
     current_month = datetime.now().strftime("%Y-%m")
     monthly_total = monthly_stats[f"{user_id}_{current_month}"]
-    summary += f"📅 **סה\"כ החודש: {monthly_total} משימות**\n\n"
-    summary += "צלם את הסיכום! 📸"
+    summary += f"📅 **סה״כ החודש: {monthly_total} משימות**\n\n"
+    summary += "צלם מסך של הסיכום! 📸"
     
     # Generate plain text copy version
     copy_text = f"תנועת רכבים היום - {datetime.now().strftime('%Y-%m-%d')}\n\n"
@@ -337,7 +373,7 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         copy_text += f"זמן: {car['timestamp']}\n"
         copy_text += "------------------------------\n\n"
     
-    copy_text += f"סה\"כ החודש: {monthly_total} משימות"
+    copy_text += f"סה״כ החודש: {monthly_total} משימות"
     
     await update.message.reply_text(
         summary,
@@ -351,22 +387,185 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         parse_mode='Markdown'
     )
     
-    # Send email summary
+    # Store data for email management
+    context.user_data['daily_cars'] = daily_cars
+    context.user_data['job_stats'] = job_stats
+    
+    # Ask about email management
+    current_emails = get_user_emails(user_id)
+    email_list_text = "\n".join([f"• {email}" for email in current_emails])
+    
+    reply_keyboard = [['שלח דוח'], ['עריכת רשימת מיילים'], ['דלג']]
+    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        f"📧 **רשימת מיילים נוכחית:**\n{email_list_text}\n\n"
+        "האם תרצה לשלוח את הדוח היומי למיילים האלה?",
+        reply_markup=markup
+    )
+    
+    return EMAIL_MANAGEMENT
+
+async def handle_email_management(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle email management choice"""
+    user_id = str(update.effective_user.id)
+    choice = update.message.text.strip()
+    
+    if choice == "שלח דוח":
+        # Send email and finish
+        daily_cars = context.user_data['daily_cars']
+        job_stats = context.user_data['job_stats']
+        
+        success = send_daily_email(user_id, daily_cars, job_stats)
+        if success:
+            await update.message.reply_text("📧 דוח יומי נשלח באימייל!", reply_markup=ReplyKeyboardRemove())
+        else:
+            await update.message.reply_text("⚠️ שליחת האימייל נכשלה - בדוק לוגים", reply_markup=ReplyKeyboardRemove())
+        
+        return await finish_day(update, context)
+        
+    elif choice == "עריכת רשימת מיילים":
+        current_emails = get_user_emails(user_id)
+        email_list_text = "\n".join([f"{i+1}. {email}" for i, email in enumerate(current_emails)])
+        
+        reply_keyboard = [['הוסף מייל'], ['הסר מייל'], ['סיים עריכה']]
+        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
+        await update.message.reply_text(
+            f"📧 **רשימת מיילים נוכחית:**\n{email_list_text}\n\n"
+            "מה תרצה לעשות?",
+            reply_markup=markup
+        )
+        
+        return EMAIL_MANAGEMENT
+        
+    elif choice == "דלג":
+        return await finish_day(update, context)
+        
+    elif choice == "הוסף מייל":
+        await update.message.reply_text(
+            "📧 אנא הכנס כתובת מייל חדשה:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return EMAIL_ADD
+        
+    elif choice == "הסר מייל":
+        current_emails = get_user_emails(user_id)
+        if not current_emails:
+            await update.message.reply_text("אין מיילים להסרה!")
+            return EMAIL_MANAGEMENT
+            
+        email_list_text = "\n".join([f"{i+1}. {email}" for i, email in enumerate(current_emails)])
+        await update.message.reply_text(
+            f"📧 **רשימת מיילים:**\n{email_list_text}\n\n"
+            "אנא הכנס את המספר של המייל שברצונך להסיר:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return EMAIL_REMOVE
+        
+    elif choice == "סיים עריכה":
+        # Ask again about sending email
+        current_emails = get_user_emails(user_id)
+        email_list_text = "\n".join([f"• {email}" for email in current_emails])
+        
+        reply_keyboard = [['שלח דוח'], ['דלג']]
+        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
+        await update.message.reply_text(
+            f"📧 **רשימת מיילים מעודכנת:**\n{email_list_text}\n\n"
+            "האם תרצה לשלוח את הדוח היומי למיילים האלה?",
+            reply_markup=markup
+        )
+        
+        return EMAIL_MANAGEMENT
+    
+    return EMAIL_MANAGEMENT
+
+async def handle_email_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle adding new email"""
+    user_id = str(update.effective_user.id)
+    new_email = update.message.text.strip()
+    
+    # Basic email validation
+    if '@' not in new_email or '.' not in new_email:
+        await update.message.reply_text("❌ כתובת מייל לא תקינה. אנא נסה שוב:")
+        return EMAIL_ADD
+    
+    # Add email to user's list
+    if user_id not in email_lists:
+        email_lists[user_id] = []
+    
+    if new_email not in email_lists[user_id]:
+        email_lists[user_id].append(new_email)
+        save_data()
+        await update.message.reply_text(f"✅ המייל {new_email} נוסף בהצלחה!")
+    else:
+        await update.message.reply_text("המייל כבר קיים ברשימה!")
+    
+    # Return to email management
+    current_emails = get_user_emails(user_id)
+    email_list_text = "\n".join([f"{i+1}. {email}" for i, email in enumerate(current_emails)])
+    
+    reply_keyboard = [['הוסף מייל'], ['הסר מייל'], ['סיים עריכה']]
+    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        f"📧 **רשימת מיילים מעודכנת:**\n{email_list_text}\n\n"
+        "מה תרצה לעשות?",
+        reply_markup=markup
+    )
+    
+    return EMAIL_MANAGEMENT
+
+async def handle_email_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle removing email"""
+    user_id = str(update.effective_user.id)
+    choice = update.message.text.strip()
+    
+    current_emails = get_user_emails(user_id)
+    
     try:
-        send_daily_email(daily_cars, job_stats)
-        await update.message.reply_text("📧 דו\"ח יומי נשלח במייל!")
-    except Exception as e:
-        logger.error(f"Failed to send email: {e}")
-        await update.message.reply_text("⚠️ שליחת המייל נכשלה - בדוק את הלוגים")
+        index = int(choice) - 1
+        if 0 <= index < len(current_emails):
+            removed_email = current_emails.pop(index)
+            email_lists[user_id] = current_emails
+            save_data()
+            await update.message.reply_text(f"✅ המייל {removed_email} הוסר בהצלחה!")
+        else:
+            await update.message.reply_text("❌ מספר לא תקין. אנא נסה שוב:")
+            return EMAIL_REMOVE
+    except ValueError:
+        await update.message.reply_text("❌ אנא הכנס מספר תקין:")
+        return EMAIL_REMOVE
+    
+    # Return to email management
+    current_emails = get_user_emails(user_id)
+    email_list_text = "\n".join([f"{i+1}. {email}" for i, email in enumerate(current_emails)])
+    
+    reply_keyboard = [['הוסף מייל'], ['הסר מייל'], ['סיים עריכה']]
+    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        f"📧 **רשימת מיילים מעודכנת:**\n{email_list_text}\n\n"
+        "מה תרצה לעשות?",
+        reply_markup=markup
+    )
+    
+    return EMAIL_MANAGEMENT
+
+async def finish_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Finish the day and clean up"""
+    user_id = str(update.effective_user.id)
     
     # Clear daily data for next day
     user_data[user_id]['daily_cars'] = []
     save_data()
     
     await update.message.reply_text(
-        "היום הסתיים! השתמש ב /start כדי להתחיל מעקב חדש.\n"
-        "השתמש ב /stats כדי לראות את הסטטיסטיקות החודשיות.\n\n"
-        "💡 טיפ: לחץ החזק על הגרסה להעתקה למעלה כדי להעתיק את הטקסט בקלות!"
+        "היום הסתיים! השתמש ב-/start כדי להתחיל מעקב חדש.\n"
+        "השתמש ב-/stats כדי לראות את הסטטיסטיקות החודשיות.\n\n"
+        "💡 טיפ: לחץ והחזק על הגרסה להעתקה למעלה כדי להעתיק בקלות את הטקסט!",
+        reply_markup=ReplyKeyboardRemove()
     )
     
     return ConversationHandler.END
@@ -378,7 +577,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     stats_text = f"📊 **סטטיסטיקות חודשיות**\n\n"
     stats_text += f"📅 החודש הנוכחי ({current_month}):\n"
-    stats_text += f"🚗 סה\"כ משימות: {monthly_stats[f'{user_id}_{current_month}']}\n\n"
+    stats_text += f"🚗 סה״כ משימות: {monthly_stats[f'{user_id}_{current_month}']}\n\n"
     
     # Show last 3 months
     for i in range(1, 4):
@@ -393,7 +592,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel the conversation"""
     await update.message.reply_text(
-        "🚫 מעקב רכבים בוטל. השתמש ב /start כדי להתחיל שוב.",
+        "🚫 מעקב הרכבים בוטל. השתמש ב-/start כדי להתחיל שוב.",
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
@@ -422,6 +621,9 @@ def main() -> None:
             NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note)],
             JOB_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_job_type)],
             NEXT_OR_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_next_or_end)],
+            EMAIL_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_management)],
+            EMAIL_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_add)],
+            EMAIL_REMOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_remove)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
