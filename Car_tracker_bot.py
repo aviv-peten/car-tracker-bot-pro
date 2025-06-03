@@ -14,7 +14,7 @@ import re
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Conversation states - MODIFIED: Added new states for editing and deletion
+# Conversation   states - MODIFIED: Added new states for editing and deletion
 START, CAR_NUMBER, PICKUP, DROPOFF, NOTE, JOB_TYPE, NEXT_OR_END, EMAIL_MANAGEMENT, EMAIL_ADD, EMAIL_REMOVE, EDIT_DELETE_CHOICE, EDIT_ENTRY, DELETE_ENTRY = range(13)
 
 # Data storage (in production, use a proper database)
