@@ -31,8 +31,9 @@ DEFAULT_EMAIL_RECIPIENTS = [
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-EMAIL_USER = os.getenv('EMAIL_USER')  # Your email
-EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')  # Your email password or app password
+# Hardcoded email credentials
+EMAIL_USER = "Avivpeten123456789@gmail.com"
+EMAIL_PASSWORD = "ycqx xqaf xicz ywgi"
 
 # Job types in Hebrew
 JOB_TYPES = [
@@ -95,10 +96,6 @@ def get_user_emails(user_id):
 def send_daily_email(user_id, daily_cars, job_stats):
     """Send daily summary via email"""
     try:
-        if not EMAIL_USER or not EMAIL_PASSWORD:
-            logger.warning("Email credentials not configured")
-            return False
-            
         recipients = get_user_emails(user_id)
         if not recipients:
             logger.warning("No email recipients configured")
