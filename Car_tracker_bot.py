@@ -1,8 +1,8 @@
 import logging
+import os
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import json
-import os
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -21,22 +21,30 @@ def load_data():
     """Load user data from file"""
     global user_data, monthly_stats
     try:
-        with open('user_data.json', 'r') as f:
-            data = json.load(f)
-            user_data = data.get('user_data', {})
-            monthly_stats = defaultdict(int, data.get('monthly_stats', {}))
-    except FileNotFoundError:
+        if os.path.exists('user_data.json'):
+            with open('user_data.json', 'r') as f:
+                data = json.load(f)
+                user_data = data.get('user_data', {})
+                monthly_stats = defaultdict(int, data.get('monthly_stats', {}))
+        else:
+            user_data = {}
+            monthly_stats = defaultdict(int)
+    except Exception as e:
+        logger.error(f"Error loading data: {e}")
         user_data = {}
         monthly_stats = defaultdict(int)
 
 def save_data():
     """Save user data to file"""
-    data = {
-        'user_data': user_data,
-        'monthly_stats': dict(monthly_stats)
-    }
-    with open('user_data.json', 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        data = {
+            'user_data': user_data,
+            'monthly_stats': dict(monthly_stats)
+        }
+        with open('user_data.json', 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving data: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the car tracking session"""
@@ -273,9 +281,14 @@ def main() -> None:
     # Load existing data
     load_data()
     
+    # Get bot token from environment variable
+    bot_token = os.getenv('BOT_TOKEN')
+    if not bot_token:
+        logger.error("BOT_TOKEN environment variable not set!")
+        return
+    
     # Create the Application
-    # Your bot token from @BotFather
-    application = Application.builder().token("8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI").build()
+    application = Application.builder().token(bot_token).build()
     
     # Add conversation handler
     conv_handler = ConversationHandler(
@@ -294,6 +307,7 @@ def main() -> None:
     application.add_handler(CommandHandler('stats', stats))
     
     # Run the bot
+    logger.info("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
