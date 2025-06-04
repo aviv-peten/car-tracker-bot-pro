@@ -1,3 +1,4 @@
+
 import logging
 import os
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -14,8 +15,8 @@ import re
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Conversation   states - MODIFIED: Added new states for editing and deletion
-START, CAR_NUMBER, PICKUP, DROPOFF, NOTE, JOB_TYPE, NEXT_OR_END, EMAIL_MANAGEMENT, EMAIL_ADD, EMAIL_REMOVE, EDIT_DELETE_CHOICE, EDIT_ENTRY, DELETE_ENTRY = range(13)
+# Conversation states
+START, CAR_NUMBER, PICKUP, DROPOFF, NOTE, JOB_TYPE, NEXT_OR_END, EMAIL_MANAGEMENT, EMAIL_ADD, EMAIL_REMOVE = range(10)
 
 # Data storage (in production, use a proper database)
 user_data = {}
@@ -31,9 +32,8 @@ DEFAULT_EMAIL_RECIPIENTS = [
 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-# Hardcoded email credentials
-EMAIL_USER = "Avivpeten123456789@gmail.com"
-EMAIL_PASSWORD = "ycqx xqaf xicz ywgi"
+EMAIL_USER = os.getenv('EMAIL_USER')  # Your email
+EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')  # Your email password or app password
 
 # Job types in Hebrew
 JOB_TYPES = [
@@ -96,7 +96,15 @@ def get_user_emails(user_id):
 def send_daily_email(user_id, daily_cars, job_stats):
     """Send daily summary via email"""
     try:
+        logger.info(f"Attempting to send email. EMAIL_USER: {'SET' if EMAIL_USER else 'NOT SET'}")
+        logger.info(f"EMAIL_PASSWORD: {'SET' if EMAIL_PASSWORD else 'NOT SET'}")
+        
+        if not EMAIL_USER or not EMAIL_PASSWORD:
+            logger.warning("Email credentials not configured")
+            return False
+            
         recipients = get_user_emails(user_id)
+        logger.info(f"Email recipients: {recipients}")
         if not recipients:
             logger.warning("No email recipients configured")
             return False
@@ -134,18 +142,22 @@ def send_daily_email(user_id, daily_cars, job_stats):
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
         # Send to all recipients
+        logger.info(f"Connecting to SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
+        logger.info("SMTP connection established, attempting login...")
         server.login(EMAIL_USER, EMAIL_PASSWORD)
+        logger.info("SMTP login successful")
         
         for recipient in recipients:
+            logger.info(f"Sending email to: {recipient}")
             msg['To'] = recipient
             text = msg.as_string()
             server.sendmail(EMAIL_USER, recipient, text)
             del msg['To']
         
         server.quit()
-        logger.info("Daily email sent successfully")
+        logger.info("Daily email sent successfully to all recipients")
         return True
         
     except Exception as e:
@@ -266,8 +278,7 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     save_data()
     
-    # MODIFIED: Added editing and deletion options to the keyboard
-    reply_keyboard = [['רכב הבא', 'סיום יום'], ['עריכה', 'מחיקה']]
+    reply_keyboard = [['רכב הבא', 'סיום יום']]
     markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     car_info = user_data[user_id]['current_car']
@@ -286,7 +297,7 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return NEXT_OR_END
 
 async def handle_next_or_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle next car, end day, edit, or delete choice - MODIFIED"""
+    """Handle next car or end day choice"""
     user_id = str(update.effective_user.id)
     choice = update.message.text.strip()
     
@@ -302,280 +313,7 @@ async def handle_next_or_end(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif choice == "סיום יום":
         return await end_day(update, context)
     
-    # NEW: Handle editing and deletion options
-    elif choice == "עריכה":
-        return await show_edit_options(update, context)
-    
-    elif choice == "מחיקה":
-        return await show_delete_options(update, context)
-    
     return NEXT_OR_END
-
-# NEW FUNCTIONS: Edit and Delete functionality
-async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show list of entries for editing"""
-    user_id = str(update.effective_user.id)
-    daily_cars = user_data[user_id]['daily_cars']
-    
-    if not daily_cars:
-        await update.message.reply_text(
-            "אין רכבים לעריכה!",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return NEXT_OR_END
-    
-    # Create list of entries
-    entries_text = "📝 **בחר רכב לעריכה:**\n\n"
-    reply_keyboard = []
-    
-    for i, car in enumerate(daily_cars, 1):
-        entries_text += f"{i}. {car['car_number']} - {car['pickup']} → {car['dropoff']}\n"
-        reply_keyboard.append([f"{i}"])
-    
-    reply_keyboard.append(['ביטול'])
-    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-    
-    await update.message.reply_text(
-        entries_text,
-        reply_markup=markup,
-        parse_mode='Markdown'
-    )
-    
-    return EDIT_ENTRY
-
-async def show_delete_options(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show list of entries for deletion"""
-    user_id = str(update.effective_user.id)
-    daily_cars = user_data[user_id]['daily_cars']
-    
-    if not daily_cars:
-        await update.message.reply_text(
-            "אין רכבים למחיקה!",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return NEXT_OR_END
-    
-    # Create list of entries
-    entries_text = "🗑️ **בחר רכב למחיקה:**\n\n"
-    reply_keyboard = []
-    
-    for i, car in enumerate(daily_cars, 1):
-        entries_text += f"{i}. {car['car_number']} - {car['pickup']} → {car['dropoff']}\n"
-        reply_keyboard.append([f"{i}"])
-    
-    reply_keyboard.append(['ביטול'])
-    markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-    
-    await update.message.reply_text(
-        entries_text,
-        reply_markup=markup,
-        parse_mode='Markdown'
-    )
-    
-    return DELETE_ENTRY
-
-# NEW FUNCTIONS: Handle actual editing and deletion
-async def handle_edit_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle editing a specific entry"""
-    user_id = str(update.effective_user.id)
-    choice = update.message.text.strip()
-    
-    if choice == "ביטול":
-        reply_keyboard = [['רכב הבא', 'סיום יום'], ['עריכה', 'מחיקה']]
-        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text(
-            "עריכה בוטלה. מה תרצה לעשות?",
-            reply_markup=markup
-        )
-        return NEXT_OR_END
-    
-    try:
-        entry_index = int(choice) - 1
-        daily_cars = user_data[user_id]['daily_cars']
-        
-        if 0 <= entry_index < len(daily_cars):
-            # Store the entry being edited
-            context.user_data['editing_index'] = entry_index
-            car = daily_cars[entry_index]
-            
-            # Show current details and editing options
-            edit_options = [
-                ['מספר רכב', 'נקודת איסוף'],
-                ['נקודת יעד', 'הערה'],
-                ['סוג משימה', 'סיים עריכה']
-            ]
-            markup = ReplyKeyboardMarkup(edit_options, one_time_keyboard=True, resize_keyboard=True)
-            
-            await update.message.reply_text(
-                f"🔧 **עריכת רכב:**\n\n"
-                f"🚗 מספר רכב: {car['car_number']}\n"
-                f"📍 מאיפה: {car['pickup']}\n"
-                f"📍 לאיפה: {car['dropoff']}\n"
-                f"🏷️ סוג משימה: {car['job_type']}\n"
-                f"📝 הערה: {car['note'] if car['note'] else 'אין'}\n\n"
-                "איזה שדה תרצה לערוך?",
-                reply_markup=markup,
-                parse_mode='Markdown'
-            )
-            return EDIT_DELETE_CHOICE
-        else:
-            await update.message.reply_text("מספר לא תקין. אנא נסה שוב:")
-            return EDIT_ENTRY
-            
-    except ValueError:
-        await update.message.reply_text("אנא הכנס מספר תקין:")
-        return EDIT_ENTRY
-
-async def handle_delete_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle deleting a specific entry"""
-    user_id = str(update.effective_user.id)
-    choice = update.message.text.strip()
-    
-    if choice == "ביטול":
-        reply_keyboard = [['רכב הבא', 'סיום יום'], ['עריכה', 'מחיקה']]
-        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text(
-            "מחיקה בוטלה. מה תרצה לעשות?",
-            reply_markup=markup
-        )
-        return NEXT_OR_END
-    
-    try:
-        entry_index = int(choice) - 1
-        daily_cars = user_data[user_id]['daily_cars']
-        
-        if 0 <= entry_index < len(daily_cars):
-            deleted_car = daily_cars.pop(entry_index)
-            
-            # Update monthly stats (decrease by 1)
-            current_month = datetime.now().strftime("%Y-%m")
-            monthly_stats[f"{user_id}_{current_month}"] -= 1
-            
-            save_data()
-            
-            reply_keyboard = [['רכב הבא', 'סיום יום'], ['עריכה', 'מחיקה']]
-            markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-            
-            await update.message.reply_text(
-                f"🗑️ **רכב נמחק בהצלחה!**\n\n"
-                f"🚗 {deleted_car['car_number']}\n"
-                f"📍 {deleted_car['pickup']} → {deleted_car['dropoff']}\n\n"
-                "מה תרצה לעשות הלאה?",
-                reply_markup=markup,
-                parse_mode='Markdown'
-            )
-            return NEXT_OR_END
-        else:
-            await update.message.reply_text("מספר לא תקין. אנא נסה שוב:")
-            return DELETE_ENTRY
-            
-    except ValueError:
-        await update.message.reply_text("אנא הכנס מספר תקין:")
-        return DELETE_ENTRY
-
-async def handle_edit_field_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle which field to edit"""
-    user_id = str(update.effective_user.id)
-    choice = update.message.text.strip()
-    
-    if choice == "סיים עריכה":
-        reply_keyboard = [['רכב הבא', 'סיום יום'], ['עריכה', 'מחיקה']]
-        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text(
-            "עריכה הושלמה! מה תרצה לעשות הלאה?",
-            reply_markup=markup
-        )
-        return NEXT_OR_END
-    
-    editing_index = context.user_data.get('editing_index')
-    if editing_index is None:
-        return NEXT_OR_END
-    
-    context.user_data['editing_field'] = choice
-    
-    if choice == "מספר רכב":
-        await update.message.reply_text(
-            "🚗 הכנס מספר רכב חדש (8 ספרות):",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    elif choice == "נקודת איסוף":
-        await update.message.reply_text(
-            "📍 הכנס נקודת איסוף חדשה:",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    elif choice == "נקודת יעד":
-        await update.message.reply_text(
-            "📍 הכנס נקודת יעד חדשה:",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    elif choice == "הערה":
-        await update.message.reply_text(
-            "📝 הכנס הערה חדשה:",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    elif choice == "סוג משימה":
-        reply_keyboard = [[job_type] for job_type in JOB_TYPES]
-        markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text(
-            "🏷️ בחר סוג משימה חדש:",
-            reply_markup=markup
-        )
-    
-    return EDIT_DELETE_CHOICE
-
-async def handle_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle updating the field value"""
-    user_id = str(update.effective_user.id)
-    new_value = update.message.text.strip()
-    
-    editing_index = context.user_data.get('editing_index')
-    editing_field = context.user_data.get('editing_field')
-    
-    if editing_index is None or editing_field is None:
-        return NEXT_OR_END
-    
-    daily_cars = user_data[user_id]['daily_cars']
-    car = daily_cars[editing_index]
-    
-    # Update the appropriate field
-    if editing_field == "מספר רכב":
-        car['car_number'] = format_car_number(new_value)
-    elif editing_field == "נקודת איסוף":
-        car['pickup'] = new_value
-    elif editing_field == "נקודת יעד":
-        car['dropoff'] = new_value
-    elif editing_field == "הערה":
-        car['note'] = new_value
-    elif editing_field == "סוג משימה":
-        if new_value in JOB_TYPES:
-            car['job_type'] = new_value
-        else:
-            await update.message.reply_text("סוג משימה לא תקין. אנא בחר מהרשימה:")
-            return EDIT_DELETE_CHOICE
-    
-    save_data()
-    
-    # Show updated entry and continue editing options
-    edit_options = [
-        ['מספר רכב', 'נקודת איסוף'],
-        ['נקודת יעד', 'הערה'],
-        ['סוג משימה', 'סיים עריכה']
-    ]
-    markup = ReplyKeyboardMarkup(edit_options, one_time_keyboard=True, resize_keyboard=True)
-    
-    await update.message.reply_text(
-        f"✅ **שדה עודכן בהצלחה!**\n\n"
-        f"🚗 מספר רכב: {car['car_number']}\n"
-        f"📍 מאיפה: {car['pickup']}\n"
-        f"📍 לאיפה: {car['dropoff']}\n"
-        f"🏷️ סוג משימה: {car['job_type']}\n"
-        f"📝 הערה: {car['note'] if car['note'] else 'אין'}\n\n"
-        "איזה שדה נוסף תרצה לערוך?",
-        reply_markup=markup,
-        parse_mode='Markdown'
-    )
-    
-    return EDIT_DELETE_CHOICE
 
 async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """End the day and show summary, then ask about email management"""
@@ -882,7 +620,7 @@ def main() -> None:
     # Create the Application
     application = Application.builder().token(bot_token).build()
     
-    # Add conversation handler - MODIFIED: Added new states for editing and deletion
+    # Add conversation handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
@@ -895,10 +633,6 @@ def main() -> None:
             EMAIL_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_management)],
             EMAIL_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_add)],
             EMAIL_REMOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email_remove)],
-            # NEW STATES: Added handlers for editing and deletion
-            EDIT_ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_entry)],
-            DELETE_ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_entry)],
-            EDIT_DELETE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_field_choice)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
