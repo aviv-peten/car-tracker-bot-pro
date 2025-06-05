@@ -8,7 +8,7 @@ import os
 from collections import defaultdict
 import calendar
 
-# Bot Token
+# Bot           Token
 BOT_TOKEN = "8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI"
 bot = telebot.TeleBot(BOT_TOKEN)
 
