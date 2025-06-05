@@ -1,514 +1,616 @@
-import logging
+import telebot
 import json
 import smtplib
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
-from typing import Dict, List
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from collections import defaultdict
+import calendar
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Bot configuration
+# Bot Token
 BOT_TOKEN = "8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI"
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# Email configuration
 EMAIL_ADDRESS = "Avivpeten123456789@gmail.com"
 EMAIL_PASSWORD = "ycqx xqaf xicz ywgi"
 
-class CarTrackerBot:
-    def __init__(self):
-        self.user_data = {}
-        self.daily_jobs = {}
-        self.monthly_stats = {}
-        self.email_list = []
-        self.load_data()
+# Data files
+DATA_FILE = "car_tracker_data.json"
+EMAILS_FILE = "email_list.json"
 
-    def load_data(self):
-        """Load data from files if they exist"""
-        try:
-            if os.path.exists('monthly_stats.json'):
-                with open('monthly_stats.json', 'r', encoding='utf-8') as f:
-                    self.monthly_stats = json.load(f)
-            if os.path.exists('email_list.json'):
-                with open('email_list.json', 'r', encoding='utf-8') as f:
-                    self.email_list = json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading data: {e}")
+# Job types in Hebrew
+JOB_TYPES = [
+    "משימת שינוע",
+    "משימת סרק", 
+    "משימת טרמפ",
+    "משימת מוסך",
+    "משימת טסט"
+]
 
-    def save_data(self):
-        """Save data to files"""
-        try:
-            with open('monthly_stats.json', 'w', encoding='utf-8') as f:
-                json.dump(self.monthly_stats, f, ensure_ascii=False, indent=2)
-            with open('email_list.json', 'w', encoding='utf-8') as f:
-                json.dump(self.email_list, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving data: {e}")
+# User states
+user_states = {}
+temp_data = {}
 
-    def format_car_number(self, number: str) -> str:
-        """Format car number from 11111111 to 111-11-111"""
-        if len(number) == 8 and number.isdigit():
-            return f"{number[:3]}-{number[3:5]}-{number[5:]}"
-        return number
+def load_data():
+    """Load data from JSON file"""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
 
-    def get_main_menu_keyboard(self):
-        """Get main menu keyboard"""
-        keyboard = [
-            [InlineKeyboardButton("רכב חדש", callback_data="new_car")],
-            [InlineKeyboardButton("סוף יום", callback_data="end_day")],
-            [InlineKeyboardButton("עריכה/מחיקה", callback_data="edit_delete")]
-        ]
-        return InlineKeyboardMarkup(keyboard)
+def save_data(data):
+    """Save data to JSON file"""
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def get_job_type_keyboard(self):
-        """Get job type selection keyboard"""
-        keyboard = [
-            [InlineKeyboardButton("משימת שינוע", callback_data="job_שינוע")],
-            [InlineKeyboardButton("משימת סרק", callback_data="job_סרק")],
-            [InlineKeyboardButton("משימת טרמפ", callback_data="job_טרמפ")],
-            [InlineKeyboardButton("משימת מוסך", callback_data="job_מוסך")],
-            [InlineKeyboardButton("משימת טסט", callback_data="job_טסט")]
-        ]
-        return InlineKeyboardMarkup(keyboard)
+def load_emails():
+    """Load email list from JSON file"""
+    if os.path.exists(EMAILS_FILE):
+        with open(EMAILS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return []
 
-    def get_number_keyboard(self):
-        """Get number input keyboard"""
-        keyboard = []
-        for i in range(0, 10, 3):
-            row = []
-            for j in range(3):
-                if i + j < 10:
-                    row.append(KeyboardButton(str(i + j)))
-            keyboard.append(row)
-        keyboard.append([KeyboardButton("מחק"), KeyboardButton("אישור")])
-        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+def save_emails(emails):
+    """Save email list to JSON file"""
+    with open(EMAILS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(emails, f, ensure_ascii=False, indent=2)
 
-    def get_yes_no_keyboard(self):
-        """Get yes/no keyboard"""
-        keyboard = [
-            [InlineKeyboardButton("כן", callback_data="yes")],
-            [InlineKeyboardButton("דלג", callback_data="skip")]
-        ]
-        return InlineKeyboardMarkup(keyboard)
+def get_today_key():
+    """Get today's date key"""
+    return datetime.now().strftime("%Y-%m-%d")
 
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command handler"""
-        user_id = update.effective_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        if user_id not in self.daily_jobs:
-            self.daily_jobs[user_id] = {}
-        if today not in self.daily_jobs[user_id]:
-            self.daily_jobs[user_id][today] = []
+def get_month_key(date_obj):
+    """Get month key from date object"""
+    return date_obj.strftime("%Y-%m")
 
-        await update.message.reply_text(
-            "ברוכים הבאים למעקב רכבים!\nבחר פעולה:",
-            reply_markup=self.get_main_menu_keyboard()
+def format_car_number(number):
+    """Format car number to XXX-XX-XXX"""
+    if len(number) == 8:
+        return f"{number[:3]}-{number[3:5]}-{number[5:]}"
+    return number
+
+def get_hebrew_month_name(month_num):
+    """Get Hebrew month name"""
+    months = {
+        1: "ינואר", 2: "פברואר", 3: "מרץ", 4: "אפריל",
+        5: "מאי", 6: "יוני", 7: "יולי", 8: "אוגוסט",
+        9: "ספטמבר", 10: "אוקטובר", 11: "נובמבר", 12: "דצמבר"
+    }
+    return months.get(month_num, str(month_num))
+
+def create_main_menu():
+    """Create main menu keyboard"""
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("רכב חדש", "סוף יום")
+    markup.add("עריכה/מחיקה", "סטטיסטיקות")
+    return markup
+
+def create_number_keyboard():
+    """Create number keyboard for car input"""
+    markup = telebot.types.InlineKeyboardMarkup(row_width=3)
+    buttons = []
+    for i in range(1, 10):
+        buttons.append(telebot.types.InlineKeyboardButton(str(i), callback_data=f"num_{i}"))
+    buttons.append(telebot.types.InlineKeyboardButton("0", callback_data="num_0"))
+    buttons.append(telebot.types.InlineKeyboardButton("מחק", callback_data="num_delete"))
+    buttons.append(telebot.types.InlineKeyboardButton("אישור", callback_data="num_confirm"))
+    
+    markup.add(*buttons[:3])
+    markup.add(*buttons[3:6])
+    markup.add(*buttons[6:9])
+    markup.add(buttons[9], buttons[10], buttons[11])
+    return markup
+
+def create_job_type_keyboard():
+    """Create job type selection keyboard"""
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    for job_type in JOB_TYPES:
+        markup.add(job_type)
+    return markup
+
+def create_yes_no_keyboard():
+    """Create yes/no keyboard"""
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("כן", "דלג")
+    return markup
+
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    """Handle start command"""
+    user_states[message.chat.id] = "main_menu"
+    bot.send_message(
+        message.chat.id,
+        "ברוך הבא למעקב רכבים!\nבחר פעולה:",
+        reply_markup=create_main_menu()
+    )
+
+@bot.message_handler(func=lambda message: message.text == "רכב חדש")
+def new_car(message):
+    """Handle new car entry"""
+    user_states[message.chat.id] = "entering_car_number"
+    temp_data[message.chat.id] = {"car_number": ""}
+    
+    bot.send_message(
+        message.chat.id,
+        "הכנס מספר רכב (8 ספרות):\n\nמספר נוכחי: ",
+        reply_markup=create_number_keyboard()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("num_"))
+def handle_number_input(call):
+    """Handle number keyboard input"""
+    if call.message.chat.id not in temp_data:
+        return
+    
+    if call.data == "num_delete":
+        if temp_data[call.message.chat.id]["car_number"]:
+            temp_data[call.message.chat.id]["car_number"] = temp_data[call.message.chat.id]["car_number"][:-1]
+    elif call.data == "num_confirm":
+        car_number = temp_data[call.message.chat.id]["car_number"]
+        if len(car_number) == 8:
+            formatted_number = format_car_number(car_number)
+            temp_data[call.message.chat.id]["formatted_car_number"] = formatted_number
+            user_states[call.message.chat.id] = "entering_pickup"
+            
+            bot.edit_message_text(
+                f"מספר רכב: {formatted_number}\n\nהכנס מקום איסוף:",
+                call.message.chat.id,
+                call.message.message_id
+            )
+            return
+        else:
+            bot.answer_callback_query(call.id, "חובה להכניס 8 ספרות")
+            return
+    else:  # Regular number
+        number = call.data.split("_")[1]
+        if len(temp_data[call.message.chat.id]["car_number"]) < 8:
+            temp_data[call.message.chat.id]["car_number"] += number
+    
+    current_number = temp_data[call.message.chat.id]["car_number"]
+    bot.edit_message_text(
+        f"הכנס מספר רכב (8 ספרות):\n\nמספר נוכחי: {current_number}",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=create_number_keyboard()
+    )
+
+@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "entering_pickup")
+def handle_pickup(message):
+    """Handle pickup location input"""
+    temp_data[message.chat.id]["pickup"] = message.text
+    user_states[message.chat.id] = "entering_dropoff"
+    bot.send_message(message.chat.id, "הכנס מקום הורדה:")
+
+@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "entering_dropoff")
+def handle_dropoff(message):
+    """Handle dropoff location input"""
+    temp_data[message.chat.id]["dropoff"] = message.text
+    user_states[message.chat.id] = "entering_note"
+    bot.send_message(message.chat.id, "הכנס הערה:")
+
+@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "entering_note")
+def handle_note(message):
+    """Handle note input"""
+    temp_data[message.chat.id]["note"] = message.text
+    user_states[message.chat.id] = "selecting_job_type"
+    bot.send_message(
+        message.chat.id,
+        "בחר סוג משימה:",
+        reply_markup=create_job_type_keyboard()
+    )
+
+@bot.message_handler(func=lambda message: message.text in JOB_TYPES and user_states.get(message.chat.id) == "selecting_job_type")
+def handle_job_type(message):
+    """Handle job type selection"""
+    # Save the job
+    data = load_data()
+    today = get_today_key()
+    
+    if today not in data:
+        data[today] = []
+    
+    job = {
+        "car_number": temp_data[message.chat.id]["formatted_car_number"],
+        "pickup": temp_data[message.chat.id]["pickup"],
+        "dropoff": temp_data[message.chat.id]["dropoff"],
+        "note": temp_data[message.chat.id]["note"],
+        "job_type": message.text,
+        "time": datetime.now().strftime("%H:%M")
+    }
+    
+    data[today].append(job)
+    save_data(data)
+    
+    # Clear temp data
+    del temp_data[message.chat.id]
+    user_states[message.chat.id] = "main_menu"
+    
+    bot.send_message(
+        message.chat.id,
+        f"המשימה נשמרה בהצלחה!\n\nרכב: {job['car_number']}\nמ: {job['pickup']}\nל: {job['dropoff']}\nהערה: {job['note']}\nסוג: {job['job_type']}",
+        reply_markup=create_main_menu()
+    )
+
+@bot.message_handler(func=lambda message: message.text == "סוף יום")
+def end_of_day(message):
+    """Handle end of day summary"""
+    data = load_data()
+    today = get_today_key()
+    
+    if today not in data or not data[today]:
+        bot.send_message(
+            message.chat.id,
+            "אין משימות להיום",
+            reply_markup=create_main_menu()
         )
+        return
+    
+    jobs = data[today]
+    
+    # Count job types
+    job_counts = defaultdict(int)
+    for job in jobs:
+        job_counts[job['job_type']] += 1
+    
+    # Create summary message
+    summary = f"סיכום היום ({datetime.now().strftime('%d/%m/%Y')}):\n\n"
+    summary += f"סך הכל: {len(jobs)} משימות\n\n"
+    
+    for job_type, count in job_counts.items():
+        summary += f"{job_type}: {count}\n"
+    
+    summary += "\nפירוט המשימות:\n\n"
+    
+    for i, job in enumerate(jobs, 1):
+        summary += f"משימה {i}:\n"
+        summary += f"רכב: {job['car_number']}\n"
+        summary += f"מ: {job['pickup']}\n"
+        summary += f"ל: {job['dropoff']}\n"
+        summary += f"הערה: {job['note']}\n"
+        summary += f"סוג: {job['job_type']}\n"
+        summary += f"שעה: {job['time']}\n\n"
+    
+    bot.send_message(message.chat.id, summary)
+    
+    # Update monthly statistics
+    current_date = datetime.now()
+    month_key = get_month_key(current_date)
+    
+    if 'monthly_stats' not in data:
+        data['monthly_stats'] = {}
+    
+    if month_key not in data['monthly_stats']:
+        data['monthly_stats'][month_key] = 0
+    
+    data['monthly_stats'][month_key] += len(jobs)
+    save_data(data)
+    
+    # Ask about email
+    user_states[message.chat.id] = "asking_email"
+    temp_data[message.chat.id] = {"daily_summary": summary, "job_counts": dict(job_counts), "total_jobs": len(jobs)}
+    
+    bot.send_message(
+        message.chat.id,
+        "האם לשלוח דוח במייל?",
+        reply_markup=create_yes_no_keyboard()
+    )
 
-    async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle button callbacks"""
-        query = update.callback_query
-        await query.answer()
+@bot.message_handler(func=lambda message: message.text in ["כן", "דלג"] and user_states.get(message.chat.id) == "asking_email")
+def handle_email_choice(message):
+    """Handle email choice"""
+    if message.text == "כן":
+        emails = load_emails()
+        if not emails:
+            bot.send_message(
+                message.chat.id,
+                "אין כתובות מייל שמורות.\nהכנס כתובת מייל:"
+            )
+            user_states[message.chat.id] = "adding_email"
+            return
         
-        user_id = query.from_user.id
-        data = query.data
+        # Show email list
+        user_states[message.chat.id] = "selecting_emails"
+        temp_data[message.chat.id]["selected_emails"] = []
+        show_email_list(message.chat.id)
+    else:
+        # Skip email and finish
+        finish_end_of_day(message.chat.id)
 
-        if data == "new_car":
-            await self.start_new_car(query, context)
-        elif data == "end_day":
-            await self.end_of_day(query, context)
-        elif data == "edit_delete":
-            await self.edit_delete_menu(query, context)
-        elif data.startswith("job_"):
-            job_type = data.replace("job_", "")
-            await self.save_job(query, context, job_type)
-        elif data == "yes":
-            await self.show_email_list(query, context)
-        elif data == "skip":
-            await self.finish_end_of_day(query, context)
-        elif data.startswith("email_"):
-            await self.toggle_email(query, context, data)
-        elif data == "send_emails":
-            await self.send_daily_report(query, context)
-        elif data.startswith("delete_"):
-            await self.delete_job(query, context, data)
+def show_email_list(chat_id):
+    """Show email list for selection"""
+    emails = load_emails()
+    markup = telebot.types.InlineKeyboardMarkup()
+    
+    for i, email in enumerate(emails):
+        selected = "✓ " if email in temp_data[chat_id]["selected_emails"] else ""
+        markup.add(telebot.types.InlineKeyboardButton(
+            f"{selected}{email}",
+            callback_data=f"email_toggle_{i}"
+        ))
+    
+    markup.add(telebot.types.InlineKeyboardButton("הוסף מייל חדש", callback_data="add_email"))
+    markup.add(telebot.types.InlineKeyboardButton("מחק מייל", callback_data="delete_email"))
+    markup.add(telebot.types.InlineKeyboardButton("שלח לנבחרים", callback_data="send_emails"))
+    markup.add(telebot.types.InlineKeyboardButton("דלג", callback_data="skip_emails"))
+    
+    bot.send_message(
+        chat_id,
+        "בחר כתובות מייל לשליחה:",
+        reply_markup=markup
+    )
 
-    async def start_new_car(self, query, context):
-        """Start new car entry process"""
-        user_id = query.from_user.id
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
+@bot.callback_query_handler(func=lambda call: call.data.startswith("email_"))
+def handle_email_callback(call):
+    """Handle email-related callbacks"""
+    emails = load_emails()
+    
+    if call.data.startswith("email_toggle_"):
+        email_index = int(call.data.split("_")[2])
+        email = emails[email_index]
         
-        self.user_data[user_id]['state'] = 'entering_car_number'
-        self.user_data[user_id]['car_number_input'] = ''
+        if email in temp_data[call.message.chat.id]["selected_emails"]:
+            temp_data[call.message.chat.id]["selected_emails"].remove(email)
+        else:
+            temp_data[call.message.chat.id]["selected_emails"].append(email)
         
-        await query.edit_message_text(
-            "הכנס מספר רכב (8 ספרות):\nמספר נוכחי: ",
+        # Update the message
+        bot.edit_message_reply_markup(
+            call.message.chat.id,
+            call.message.message_id,
             reply_markup=None
         )
+        show_email_list(call.message.chat.id)
         
-        # Send number keyboard
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="השתמש במקלדת למטה:",
-            reply_markup=self.get_number_keyboard()
-        )
-
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text messages"""
-        user_id = update.effective_user.id
-        text = update.message.text
-        
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-
-        state = self.user_data[user_id].get('state', '')
-
-        if state == 'entering_car_number':
-            await self.handle_car_number_input(update, context, text)
-        elif state == 'entering_pickup':
-            await self.handle_pickup_input(update, context, text)
-        elif state == 'entering_dropoff':
-            await self.handle_dropoff_input(update, context, text)
-        elif state == 'entering_note':
-            await self.handle_note_input(update, context, text)
-        elif state == 'adding_email':
-            await self.handle_email_input(update, context, text)
-
-    async def handle_car_number_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Handle car number input"""
-        user_id = update.effective_user.id
-        
-        if text == "מחק":
-            self.user_data[user_id]['car_number_input'] = ''
-            await update.message.reply_text("מספר נוכחי: ")
-        elif text == "אישור":
-            car_number = self.user_data[user_id]['car_number_input']
-            if len(car_number) == 8:
-                formatted_number = self.format_car_number(car_number)
-                self.user_data[user_id]['car_number'] = formatted_number
-                self.user_data[user_id]['state'] = 'entering_pickup'
-                await update.message.reply_text(
-                    f"מספר רכב: {formatted_number}\n\nהכנס מקום איסוף:",
-                    reply_markup=None
-                )
-            else:
-                await update.message.reply_text("מספר רכב חייב להיות 8 ספרות")
-        elif text.isdigit() and len(text) == 1:
-            current = self.user_data[user_id]['car_number_input']
-            if len(current) < 8:
-                self.user_data[user_id]['car_number_input'] += text
-                await update.message.reply_text(f"מספר נוכחי: {self.user_data[user_id]['car_number_input']}")
-
-    async def handle_pickup_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Handle pickup location input"""
-        user_id = update.effective_user.id
-        self.user_data[user_id]['pickup'] = text
-        self.user_data[user_id]['state'] = 'entering_dropoff'
-        await update.message.reply_text("הכנס מקום הורדה:")
-
-    async def handle_dropoff_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Handle dropoff location input"""
-        user_id = update.effective_user.id
-        self.user_data[user_id]['dropoff'] = text
-        self.user_data[user_id]['state'] = 'entering_note'
-        await update.message.reply_text("הכנס הערה:")
-
-    async def handle_note_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Handle note input"""
-        user_id = update.effective_user.id
-        self.user_data[user_id]['note'] = text
-        self.user_data[user_id]['state'] = 'selecting_job_type'
-        
-        await update.message.reply_text(
-            "בחר סוג משימה:",
-            reply_markup=self.get_job_type_keyboard()
-        )
-
-    async def save_job(self, query, context, job_type):
-        """Save the job"""
-        user_id = query.from_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        if user_id not in self.daily_jobs:
-            self.daily_jobs[user_id] = {}
-        if today not in self.daily_jobs[user_id]:
-            self.daily_jobs[user_id][today] = []
-
-        job = {
-            'car_number': self.user_data[user_id]['car_number'],
-            'pickup': self.user_data[user_id]['pickup'],
-            'dropoff': self.user_data[user_id]['dropoff'],
-            'note': self.user_data[user_id]['note'],
-            'job_type': job_type,
-            'time': datetime.now().strftime('%H:%M')
-        }
-        
-        self.daily_jobs[user_id][today].append(job)
-        self.user_data[user_id]['state'] = ''
-        
-        await query.edit_message_text(
-            f"משימה נשמרה בהצלחה!\n"
-            f"רכב: {job['car_number']}\n"
-            f"איסוף: {job['pickup']}\n"
-            f"הורדה: {job['dropoff']}\n"
-            f"הערה: {job['note']}\n"
-            f"סוג: {job['job_type']}\n"
-            f"שעה: {job['time']}\n\n"
-            f"בחר פעולה:",
-            reply_markup=self.get_main_menu_keyboard()
-        )
-
-    async def end_of_day(self, query, context):
-        """Handle end of day"""
-        user_id = query.from_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        if user_id not in self.daily_jobs or today not in self.daily_jobs[user_id]:
-            await query.edit_message_text(
-                "אין משימות להיום.\n\nבחר פעולה:",
-                reply_markup=self.get_main_menu_keyboard()
-            )
-            return
-
-        jobs = self.daily_jobs[user_id][today]
-        total_jobs = len(jobs)
-        
-        # Count job types
-        job_counts = {}
-        for job in jobs:
-            job_type = job['job_type']
-            job_counts[job_type] = job_counts.get(job_type, 0) + 1
-
-        # Update monthly stats
-        month = datetime.now().strftime('%Y-%m')
-        if user_id not in self.monthly_stats:
-            self.monthly_stats[user_id] = {}
-        if month not in self.monthly_stats[user_id]:
-            self.monthly_stats[user_id][month] = {}
-        
-        for job_type, count in job_counts.items():
-            if job_type not in self.monthly_stats[user_id][month]:
-                self.monthly_stats[user_id][month][job_type] = 0
-            self.monthly_stats[user_id][month][job_type] += count
-
-        # Generate report
-        report = f"דוח סוף יום - {today}\n\n"
-        report += f"סך הכל משימות: {total_jobs}\n\n"
-        
-        for job_type, count in job_counts.items():
-            report += f"{job_type}: {count}\n"
-        
-        report += "\nסטטיסטיקה חודשית:\n"
-        for i in range(3):
-            month_date = datetime.now() - timedelta(days=30*i)
-            month_key = month_date.strftime('%Y-%m')
-            if month_key in self.monthly_stats.get(user_id, {}):
-                report += f"\n{month_date.strftime('%m/%Y')}:\n"
-                month_data = self.monthly_stats[user_id][month_key]
-                for job_type, count in month_data.items():
-                    report += f"  {job_type}: {count}\n"
-
-        self.save_data()
-        
-        await query.edit_message_text(
-            report + "\n\nרוצה לשלוח דוח במייל?",
-            reply_markup=self.get_yes_no_keyboard()
-        )
-
-    async def show_email_list(self, query, context):
-        """Show email list for selection"""
-        keyboard = []
-        for email in self.email_list:
-            keyboard.append([InlineKeyboardButton(f"✓ {email}", callback_data=f"email_{email}")])
-        
-        keyboard.append([InlineKeyboardButton("הוסף מייל חדש", callback_data="add_email")])
-        keyboard.append([InlineKeyboardButton("שלח דוח", callback_data="send_emails")])
-        keyboard.append([InlineKeyboardButton("דלג", callback_data="skip")])
-        
-        await query.edit_message_text(
-            "בחר מיילים לשליחה:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    async def toggle_email(self, query, context, data):
-        """Toggle email selection"""
-        email = data.replace("email_", "")
-        user_id = query.from_user.id
-        
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-        if 'selected_emails' not in self.user_data[user_id]:
-            self.user_data[user_id]['selected_emails'] = []
-        
-        if email in self.user_data[user_id]['selected_emails']:
-            self.user_data[user_id]['selected_emails'].remove(email)
+    elif call.data == "send_emails":
+        selected_emails = temp_data[call.message.chat.id]["selected_emails"]
+        if selected_emails:
+            send_daily_email(call.message.chat.id, selected_emails)
         else:
-            self.user_data[user_id]['selected_emails'].append(email)
-        
-        # Refresh the keyboard
-        keyboard = []
-        for e in self.email_list:
-            prefix = "✓" if e in self.user_data[user_id]['selected_emails'] else "○"
-            keyboard.append([InlineKeyboardButton(f"{prefix} {e}", callback_data=f"email_{e}")])
-        
-        keyboard.append([InlineKeyboardButton("הוסף מייל חדש", callback_data="add_email")])
-        keyboard.append([InlineKeyboardButton("שלח דוח", callback_data="send_emails")])
-        keyboard.append([InlineKeyboardButton("דלג", callback_data="skip")])
-        
-        await query.edit_message_text(
-            "בחר מיילים לשליחה:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            bot.answer_callback_query(call.id, "לא נבחרו כתובות מייל")
+            
+    elif call.data == "skip_emails":
+        bot.edit_message_text(
+            "דילוג על שליחת מייל",
+            call.message.chat.id,
+            call.message.message_id
         )
+        finish_end_of_day(call.message.chat.id)
 
-    async def send_daily_report(self, query, context):
-        """Send daily report via email"""
-        user_id = query.from_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
+def send_daily_email(chat_id, email_addresses):
+    """Send daily summary email"""
+    try:
+        summary_data = temp_data[chat_id]
         
-        selected_emails = self.user_data[user_id].get('selected_emails', [])
-        if not selected_emails:
-            await query.edit_message_text("לא נבחרו מיילים.")
-            return
+        # Create email content
+        subject = f"דוח יומי - {datetime.now().strftime('%d/%m/%Y')}"
+        
+        body = f"סך הכל היום: {summary_data['total_jobs']} משימות\n\n"
+        
+        for job_type, count in summary_data['job_counts'].items():
+            body += f"{job_type}: {count}\n"
+        
+        body += "\n" + summary_data['daily_summary']
+        
+        # Send email
+        msg = MIMEMultipart()
+        msg['From'] = "Automatically car tracker massage"
+        msg['Subject'] = subject
+        
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        
+        for email in email_addresses:
+            msg['To'] = email
+            server.send_message(msg)
+            del msg['To']
+        
+        server.quit()
+        
+        bot.send_message(chat_id, f"דוח נשלח בהצלחה ל-{len(email_addresses)} כתובות")
+        finish_end_of_day(chat_id)
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"שגיאה בשליחת מייל: {str(e)}")
+        finish_end_of_day(chat_id)
 
-        # Generate email content
-        jobs = self.daily_jobs[user_id][today]
-        
-        email_content = f"דוח יומי - {today}\n\n"
-        email_content += f"סך הכל משימות: {len(jobs)}\n\n"
-        
-        for i, job in enumerate(jobs, 1):
-            email_content += f"משימה {i}:\n"
-            email_content += f"  רכב: {job['car_number']}\n"
-            email_content += f"  איסוף: {job['pickup']}\n"
-            email_content += f"  הורדה: {job['dropoff']}\n"
-            email_content += f"  הערה: {job['note']}\n"
-            email_content += f"  סוג: {job['job_type']}\n"
-            email_content += f"  שעה: {job['time']}\n\n"
+def finish_end_of_day(chat_id):
+    """Finish end of day process"""
+    # Clear today's jobs
+    data = load_data()
+    today = get_today_key()
+    if today in data:
+        del data[today]
+        save_data(data)
+    
+    # Clear temp data
+    if chat_id in temp_data:
+        del temp_data[chat_id]
+    
+    user_states[chat_id] = "main_menu"
+    
+    bot.send_message(
+        chat_id,
+        "סוף יום הושלם!\nנתוני היום נמחקו ומחכים למחר.",
+        reply_markup=create_main_menu()
+    )
 
-        # Send emails
-        try:
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            
-            for email in selected_emails:
-                msg = MIMEMultipart()
-                msg['From'] = EMAIL_ADDRESS
-                msg['To'] = email
-                msg['Subject'] = f"דוח יומי - {today}"
-                
-                msg.attach(MIMEText(email_content, 'plain', 'utf-8'))
-                
-                server.send_message(msg)
-            
-            server.quit()
-            
-            await query.edit_message_text(
-                f"דוח נשלח בהצלחה ל-{len(selected_emails)} מיילים!",
-                reply_markup=self.get_main_menu_keyboard()
-            )
-            
-        except Exception as e:
-            await query.edit_message_text(f"שגיאה בשליחת מייל: {str(e)}")
-        
-        await self.finish_end_of_day(query, context)
-
-    async def finish_end_of_day(self, query, context):
-        """Finish end of day process"""
-        user_id = query.from_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        # Clear today's jobs
-        if user_id in self.daily_jobs and today in self.daily_jobs[user_id]:
-            del self.daily_jobs[user_id][today]
-        
-        # Clear user state
-        if user_id in self.user_data:
-            self.user_data[user_id] = {}
-        
-        await query.edit_message_text(
-            "סוף יום הושלם בהצלחה!\n\nבחר פעולה:",
-            reply_markup=self.get_main_menu_keyboard()
+@bot.message_handler(func=lambda message: message.text == "סטטיסטיקות")
+def show_statistics(message):
+    """Show monthly statistics"""
+    data = load_data()
+    
+    if 'monthly_stats' not in data:
+        bot.send_message(
+            message.chat.id,
+            "אין נתונים סטטיסטיים",
+            reply_markup=create_main_menu()
         )
-
-    async def edit_delete_menu(self, query, context):
-        """Show edit/delete menu"""
-        user_id = query.from_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
+        return
+    
+    current_date = datetime.now()
+    stats_message = "סטטיסטיקות חודשיות:\n\n"
+    
+    # Show current month and 3 months back
+    for i in range(4):
+        month_date = current_date - timedelta(days=30*i)
+        month_key = get_month_key(month_date)
+        month_name = get_hebrew_month_name(month_date.month)
+        year = month_date.year
         
-        if user_id not in self.daily_jobs or today not in self.daily_jobs[user_id]:
-            await query.edit_message_text(
-                "אין משימות להיום.\n\nבחר פעולה:",
-                reply_markup=self.get_main_menu_keyboard()
-            )
-            return
-
-        jobs = self.daily_jobs[user_id][today]
-        keyboard = []
+        count = data['monthly_stats'].get(month_key, 0)
         
-        for i, job in enumerate(jobs):
-            text = f"{job['car_number']} - {job['pickup']} → {job['dropoff']}"
-            keyboard.append([InlineKeyboardButton(f"מחק: {text}", callback_data=f"delete_{i}")])
-        
-        keyboard.append([InlineKeyboardButton("חזור לתפריט הראשי", callback_data="main_menu")])
-        
-        await query.edit_message_text(
-            "בחר משימה למחיקה:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    async def delete_job(self, query, context, data):
-        """Delete a job"""
-        user_id = query.from_user.id
-        today = datetime.now().strftime('%Y-%m-%d')
-        job_index = int(data.replace("delete_", ""))
-        
-        if user_id in self.daily_jobs and today in self.daily_jobs[user_id]:
-            if 0 <= job_index < len(self.daily_jobs[user_id][today]):
-                deleted_job = self.daily_jobs[user_id][today].pop(job_index)
-                await query.edit_message_text(
-                    f"משימה נמחקה: {deleted_job['car_number']}\n\nבחר פעולה:",
-                    reply_markup=self.get_main_menu_keyboard()
-                )
-            else:
-                await query.edit_message_text(
-                    "שגיאה במחיקת המשימה.\n\nבחר פעולה:",
-                    reply_markup=self.get_main_menu_keyboard()
-                )
-
-    async def handle_email_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Handle email input"""
-        if "@" in text and "." in text:
-            if text not in self.email_list:
-                self.email_list.append(text)
-                self.save_data()
-                await update.message.reply_text(f"מייל נוסף: {text}")
-            else:
-                await update.message.reply_text("מייל כבר קיים ברשימה")
+        if i == 0:
+            stats_message += f"חודש נוכחי ({month_name} {year}): {count} משימות\n"
         else:
-            await update.message.reply_text("מייל לא תקין")
+            stats_message += f"לפני {i} חודש{'ים' if i > 1 else ''} ({month_name} {year}): {count} משימות\n"
+    
+    bot.send_message(
+        message.chat.id,
+        stats_message,
+        reply_markup=create_main_menu()
+    )
 
-def main():
-    """Main function"""
-    bot = CarTrackerBot()
+@bot.message_handler(func=lambda message: message.text == "עריכה/מחיקה")
+def edit_delete(message):
+    """Handle edit/delete functionality"""
+    data = load_data()
+    today = get_today_key()
     
-    # Create application
-    application = Application.builder().token(BOT_TOKEN).build()
+    if today not in data or not data[today]:
+        bot.send_message(
+            message.chat.id,
+            "אין משימות להיום לעריכה",
+            reply_markup=create_main_menu()
+        )
+        return
     
-    # Add handlers
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(CallbackQueryHandler(bot.button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+    jobs = data[today]
+    markup = telebot.types.InlineKeyboardMarkup()
     
-    # Start the bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    for i, job in enumerate(jobs):
+        markup.add(telebot.types.InlineKeyboardButton(
+            f"משימה {i+1}: {job['car_number']} - {job['job_type']}",
+            callback_data=f"edit_{i}"
+        ))
+    
+    markup.add(telebot.types.InlineKeyboardButton("חזרה לתפריט", callback_data="back_to_menu"))
+    
+    bot.send_message(
+        message.chat.id,
+        "בחר משימה לעריכה או מחיקה:",
+        reply_markup=markup
+    )
 
-if __name__ == '__main__':
-    main()
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_"))
+def handle_edit_callback(call):
+    """Handle edit callback"""
+    job_index = int(call.data.split("_")[1])
+    data = load_data()
+    today = get_today_key()
+    
+    if today not in data or job_index >= len(data[today]):
+        bot.answer_callback_query(call.id, "משימה לא נמצאה")
+        return
+    
+    job = data[today][job_index]
+    
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton("מחק משימה", callback_data=f"delete_{job_index}"))
+    markup.add(telebot.types.InlineKeyboardButton("חזרה", callback_data="back_to_edit"))
+    
+    job_details = f"משימה {job_index + 1}:\n"
+    job_details += f"רכב: {job['car_number']}\n"
+    job_details += f"מ: {job['pickup']}\n"
+    job_details += f"ל: {job['dropoff']}\n"
+    job_details += f"הערה: {job['note']}\n"
+    job_details += f"סוג: {job['job_type']}\n"
+    job_details += f"שעה: {job['time']}"
+    
+    bot.edit_message_text(
+        job_details,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_"))
+def handle_delete_callback(call):
+    """Handle delete callback"""
+    job_index = int(call.data.split("_")[1])
+    data = load_data()
+    today = get_today_key()
+    
+    if today not in data or job_index >= len(data[today]):
+        bot.answer_callback_query(call.id, "משימה לא נמצאה")
+        return
+    
+    # Delete the job
+    del data[today][job_index]
+    save_data(data)
+    
+    bot.edit_message_text(
+        "המשימה נמחקה בהצלחה",
+        call.message.chat.id,
+        call.message.message_id
+    )
+    
+    # Go back to main menu
+    bot.send_message(
+        call.message.chat.id,
+        "חזרה לתפריט הראשי",
+        reply_markup=create_main_menu()
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+def back_to_menu(call):
+    """Go back to main menu"""
+    user_states[call.message.chat.id] = "main_menu"
+    bot.edit_message_text(
+        "תפריט ראשי",
+        call.message.chat.id,
+        call.message.message_id
+    )
+    bot.send_message(
+        call.message.chat.id,
+        "בחר פעולה:",
+        reply_markup=create_main_menu()
+    )
+
+@bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "adding_email")
+def handle_add_email(message):
+    """Handle adding new email"""
+    email = message.text.strip()
+    if "@" in email and "." in email:
+        emails = load_emails()
+        if email not in emails:
+            emails.append(email)
+            save_emails(emails)
+            bot.send_message(message.chat.id, f"מייל {email} נוסף בהצלחה")
+        else:
+            bot.send_message(message.chat.id, "המייל כבר קיים")
+        
+        # Go back to email selection
+        user_states[message.chat.id] = "selecting_emails"
+        temp_data[message.chat.id]["selected_emails"] = [email]
+        show_email_list(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "כתובת מייל לא תקינה, נסה שוב:")
+
+# Default message handler
+@bot.message_handler(func=lambda message: True)
+def default_handler(message):
+    """Handle all other messages"""
+    bot.send_message(
+        message.chat.id,
+        "לא הבנתי. בחר אפשרות מהתפריט:",
+        reply_markup=create_main_menu()
+    )
+
+if __name__ == "__main__":
+    print("Bot starting...")
+    bot.infinity_polling()
