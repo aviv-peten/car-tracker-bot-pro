@@ -7,18 +7,24 @@ from email.mime.multipart import MIMEMultipart
 import os
 from collections import defaultdict
 import calendar
+import logging
 
-# Bot           Token
-BOT_TOKEN = "8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI"
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Bot Token
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # Email configuration
-EMAIL_ADDRESS = "Avivpeten123456789@gmail.com"
-EMAIL_PASSWORD = "ycqx xqaf xicz ywgi"
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "Avivpeten123456789@gmail.com")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "ycqx xqaf xicz ywgi")
 
-# Data files
-DATA_FILE = "car_tracker_data.json"
-EMAILS_FILE = "email_list.json"
+# Data files - use /tmp for Railway
+DATA_DIR = "/tmp" if os.path.exists("/tmp") else "."
+DATA_FILE = os.path.join(DATA_DIR, "car_tracker_data.json")
+EMAILS_FILE = os.path.join(DATA_DIR, "email_list.json")
 
 # Job types in Hebrew
 JOB_TYPES = [
@@ -35,27 +41,39 @@ temp_data = {}
 
 def load_data():
     """Load data from JSON file"""
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading data: {e}")
     return {}
 
 def save_data(data):
     """Save data to JSON file"""
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving data: {e}")
 
 def load_emails():
     """Load email list from JSON file"""
-    if os.path.exists(EMAILS_FILE):
-        with open(EMAILS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    try:
+        if os.path.exists(EMAILS_FILE):
+            with open(EMAILS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading emails: {e}")
     return []
 
 def save_emails(emails):
     """Save email list to JSON file"""
-    with open(EMAILS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(emails, f, ensure_ascii=False, indent=2)
+    try:
+        with open(EMAILS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(emails, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving emails: {e}")
 
 def get_today_key():
     """Get today's date key"""
@@ -141,40 +159,44 @@ def new_car(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("num_"))
 def handle_number_input(call):
     """Handle number keyboard input"""
-    if call.message.chat.id not in temp_data:
-        return
-    
-    if call.data == "num_delete":
-        if temp_data[call.message.chat.id]["car_number"]:
-            temp_data[call.message.chat.id]["car_number"] = temp_data[call.message.chat.id]["car_number"][:-1]
-    elif call.data == "num_confirm":
-        car_number = temp_data[call.message.chat.id]["car_number"]
-        if len(car_number) == 8:
-            formatted_number = format_car_number(car_number)
-            temp_data[call.message.chat.id]["formatted_car_number"] = formatted_number
-            user_states[call.message.chat.id] = "entering_pickup"
-            
-            bot.edit_message_text(
-                f"מספר רכב: {formatted_number}\n\nהכנס מקום איסוף:",
-                call.message.chat.id,
-                call.message.message_id
-            )
+    try:
+        if call.message.chat.id not in temp_data:
             return
-        else:
-            bot.answer_callback_query(call.id, "חובה להכניס 8 ספרות")
-            return
-    else:  # Regular number
-        number = call.data.split("_")[1]
-        if len(temp_data[call.message.chat.id]["car_number"]) < 8:
-            temp_data[call.message.chat.id]["car_number"] += number
-    
-    current_number = temp_data[call.message.chat.id]["car_number"]
-    bot.edit_message_text(
-        f"הכנס מספר רכב (8 ספרות):\n\nמספר נוכחי: {current_number}",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=create_number_keyboard()
-    )
+        
+        if call.data == "num_delete":
+            if temp_data[call.message.chat.id]["car_number"]:
+                temp_data[call.message.chat.id]["car_number"] = temp_data[call.message.chat.id]["car_number"][:-1]
+        elif call.data == "num_confirm":
+            car_number = temp_data[call.message.chat.id]["car_number"]
+            if len(car_number) == 8:
+                formatted_number = format_car_number(car_number)
+                temp_data[call.message.chat.id]["formatted_car_number"] = formatted_number
+                user_states[call.message.chat.id] = "entering_pickup"
+                
+                bot.edit_message_text(
+                    f"מספר רכב: {formatted_number}\n\nהכנס מקום איסוף:",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
+                return
+            else:
+                bot.answer_callback_query(call.id, "חובה להכניס 8 ספרות")
+                return
+        else:  # Regular number
+            number = call.data.split("_")[1]
+            if len(temp_data[call.message.chat.id]["car_number"]) < 8:
+                temp_data[call.message.chat.id]["car_number"] += number
+        
+        current_number = temp_data[call.message.chat.id]["car_number"]
+        bot.edit_message_text(
+            f"הכנס מספר רכב (8 ספרות):\n\nמספר נוכחי: {current_number}",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=create_number_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Error in handle_number_input: {e}")
+        bot.answer_callback_query(call.id, "שגיאה, נסה שוב")
 
 @bot.message_handler(func=lambda message: user_states.get(message.chat.id) == "entering_pickup")
 def handle_pickup(message):
@@ -415,6 +437,7 @@ def send_daily_email(chat_id, email_addresses):
         finish_end_of_day(chat_id)
         
     except Exception as e:
+        logger.error(f"Error sending email: {e}")
         bot.send_message(chat_id, f"שגיאה בשליחת מייל: {str(e)}")
         finish_end_of_day(chat_id)
 
@@ -612,5 +635,12 @@ def default_handler(message):
     )
 
 if __name__ == "__main__":
-    print("Bot starting...")
-    bot.infinity_polling()
+    try:
+        logger.info("Bot starting...")
+        bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        # Try to restart
+        import time
+        time.sleep(5)
+        bot.infinity_polling(timeout=10, long_polling_timeout=5)
