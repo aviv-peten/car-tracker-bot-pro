@@ -13,7 +13,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Bot Token
+# Bot                  Token
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI")
 bot = telebot.TeleBot(BOT_TOKEN)
 
