@@ -71,55 +71,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🚗 רכב חדש", callback_data="new_car")],
         [InlineKeyboardButton("📊 סיום יום", callback_data="end_day")],
         [InlineKeyboardButton("✏️ עריכה/מחיקה", callback_data="edit_delete")],
+        [InlineKeyboardButton("📈 סטטיסטיקה חודשית", callback_data="monthly_stats")],
         [InlineKeyboardButton("📧 ניהול מיילים", callback_data="manage_emails")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    text = "ברוך הבא למעקב רכבים! 🚗\nבחר פעולה:"
+    
     if update.callback_query:
-        await update.callback_query.edit_message_text(
-            "ברוך הבא למעקב רכבים! 🚗\nבחר פעולה:",
-            reply_markup=reply_markup
-        )
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(
-            "ברוך הבא למעקב רכבים! 🚗\nבחר פעולה:",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button presses"""
     query = update.callback_query
     await query.answer()
     
-    if query.data == "new_car":
+    data = query.data
+    
+    if data == "new_car":
         await new_car_start(update, context)
-    elif query.data == "end_day":
+    elif data == "end_day":
         await end_day(update, context)
-    elif query.data == "edit_delete":
+    elif data == "edit_delete":
         await edit_delete(update, context)
-    elif query.data == "manage_emails":
+    elif data == "monthly_stats":
+        await show_monthly_stats(update, context)
+    elif data == "manage_emails":
         await manage_emails(update, context)
-    elif query.data == "back_main":
+    elif data == "back_main":
         await start(update, context)
-    elif query.data.startswith("job_type_"):
+    elif data.startswith("job_type_"):
         await handle_job_type(update, context)
-    elif query.data.startswith("edit_job_"):
+    elif data.startswith("edit_job_"):
         await handle_edit_job(update, context)
-    elif query.data.startswith("delete_job_"):
+    elif data.startswith("delete_job_"):
         await handle_delete_job(update, context)
-    elif query.data == "send_email_yes":
+    elif data == "send_email_yes":
         await send_daily_email(update, context)
-    elif query.data == "send_email_no":
-        await query.edit_message_text("סיום יום הושלם! ✅\nהנתונים נשמרו.")
+    elif data == "send_email_no":
+        await finish_end_day(update, context)
+    elif data == "add_email":
+        await add_email_start(update, context)
+    elif data == "delete_email_menu":
+        await delete_email_menu(update, context)
+    elif data.startswith("del_email_"):
+        await handle_delete_email(update, context)
+    else:
+        # If unknown callback, go back to main menu
         await start(update, context)
-    elif query.data.startswith("email_"):
-        await handle_email_selection(update, context)
 
 async def new_car_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start new car entry"""
     context.user_data["state"] = "waiting_car_number"
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.callback_query.edit_message_text(
-        "🚗 רכב חדש\n\nהזן מספר רכב (8 ספרות):"
+        "🚗 רכב חדש\n\nהזן מספר רכב (8 ספרות):",
+        reply_markup=reply_markup
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -136,13 +147,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_notes(update, context)
     elif state == "waiting_email":
         await handle_new_email(update, context)
+    else:
+        # Default response for unknown state
+        await update.message.reply_text("השתמש בכפתורים או /start להתחלה")
 
 async def handle_car_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle car number input"""
     car_number = update.message.text.strip()
     
     if len(car_number) != 8 or not car_number.isdigit():
-        await update.message.reply_text("❌ מספר רכב חייב להיות 8 ספרות בדיוק!\nנסה שוב:")
+        keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "❌ מספר רכב חייב להיות 8 ספרות בדיוק!\nנסה שוב:",
+            reply_markup=reply_markup
+        )
         return
     
     # Format car number: 12345678 -> 123-45-678
@@ -150,21 +169,39 @@ async def handle_car_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["car_number"] = formatted_number
     context.user_data["state"] = "waiting_pickup"
     
-    await update.message.reply_text(f"מספר רכב: {formatted_number} ✅\n\nהזן מיקום איסוף:")
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"מספר רכב: {formatted_number} ✅\n\nהזן מיקום איסוף:",
+        reply_markup=reply_markup
+    )
 
 async def handle_pickup_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle pickup location input"""
     context.user_data["pickup"] = update.message.text.strip()
     context.user_data["state"] = "waiting_dropoff"
     
-    await update.message.reply_text("מיקום איסוף נשמר ✅\n\nהזן מיקום הורדה:")
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "מיקום איסוף נשמר ✅\n\nהזן מיקום הורדה:",
+        reply_markup=reply_markup
+    )
 
 async def handle_dropoff_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle dropoff location input"""
     context.user_data["dropoff"] = update.message.text.strip()
     context.user_data["state"] = "waiting_notes"
     
-    await update.message.reply_text("מיקום הורדה נשמר ✅\n\nהזן הערות (או כתב 'ללא'):")
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "מיקום הורדה נשמר ✅\n\nהזן הערות (או כתב 'ללא'):",
+        reply_markup=reply_markup
+    )
 
 async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle notes input and show job type buttons"""
@@ -176,7 +213,8 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔄 משימת סרק", callback_data="job_type_סרק")],
         [InlineKeyboardButton("🚗 משימת טרמפ", callback_data="job_type_טרמפ")],
         [InlineKeyboardButton("🔧 משימת מוסך", callback_data="job_type_מוסך")],
-        [InlineKeyboardButton("🧪 משימת טסט", callback_data="job_type_טסט")]
+        [InlineKeyboardButton("🧪 משימת טסט", callback_data="job_type_טסט")],
+        [InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -188,10 +226,10 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Create job record
     job = {
-        "car_number": context.user_data["car_number"],
-        "pickup": context.user_data["pickup"],
-        "dropoff": context.user_data["dropoff"],
-        "notes": context.user_data["notes"],
+        "car_number": context.user_data.get("car_number", ""),
+        "pickup": context.user_data.get("pickup", ""),
+        "dropoff": context.user_data.get("dropoff", ""),
+        "notes": context.user_data.get("notes", ""),
         "job_type": job_type,
         "time": datetime.now(IST).strftime("%H:%M")
     }
@@ -218,6 +256,9 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Clear user data
     context.user_data.clear()
     
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.callback_query.edit_message_text(
         f"✅ המשימה נשמרה בהצלחה!\n\n"
         f"🚗 רכב: {job['car_number']}\n"
@@ -225,10 +266,9 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📍 ל: {job['dropoff']}\n"
         f"📝 הערות: {job['notes'] or 'ללא'}\n"
         f"🏷️ סוג: משימת {job_type}\n"
-        f"🕐 שעה: {job['time']}"
+        f"🕐 שעה: {job['time']}",
+        reply_markup=reply_markup
     )
-    
-    await start(update, context)
 
 async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show end of day summary"""
@@ -236,8 +276,12 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today_jobs = bot_instance.data["daily_jobs"].get(today, [])
     
     if not today_jobs:
-        await update.callback_query.edit_message_text("אין משימות להיום! 📝")
-        await start(update, context)
+        keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(
+            "אין משימות להיום! 📝",
+            reply_markup=reply_markup
+        )
         return
     
     # Count job types
@@ -253,16 +297,6 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for job_type, count in job_counts.items():
         summary += f"• משימת {job_type}: {count}\n"
     
-    # Monthly stats
-    month = bot_instance.get_month_key()
-    monthly_stats = bot_instance.data["monthly_stats"].get(month, {})
-    if monthly_stats:
-        summary += f"\n📅 סיכום חודשי ({month}):\n"
-        total_monthly = sum(monthly_stats.values())
-        summary += f"סה\"ך: {total_monthly}\n"
-        for job_type, count in monthly_stats.items():
-            summary += f"• {job_type}: {count}\n"
-    
     keyboard = [
         [InlineKeyboardButton("📧 שלח מייל", callback_data="send_email_yes")],
         [InlineKeyboardButton("🚫 דלג", callback_data="send_email_no")],
@@ -271,6 +305,41 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.callback_query.edit_message_text(summary, reply_markup=reply_markup)
+
+async def show_monthly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show monthly statistics"""
+    current_month = bot_instance.get_month_key()
+    monthly_stats = bot_instance.data["monthly_stats"]
+    
+    if not monthly_stats:
+        keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(
+            "אין סטטיסטיקות חודשיות עדיין! 📊",
+            reply_markup=reply_markup
+        )
+        return
+    
+    stats_text = "📈 סטטיסטיקה חודשית:\n\n"
+    
+    # Sort months (newest first)
+    sorted_months = sorted(monthly_stats.keys(), reverse=True)
+    
+    for month in sorted_months:
+        month_data = monthly_stats[month]
+        if month_data:  # Only show months with data
+            total_month = sum(month_data.values())
+            stats_text += f"📅 {month}:\n"
+            stats_text += f"   סה\"ך: {total_month}\n"
+            
+            for job_type, count in month_data.items():
+                stats_text += f"   • {job_type}: {count}\n"
+            stats_text += "\n"
+    
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.callback_query.edit_message_text(stats_text, reply_markup=reply_markup)
 
 async def send_daily_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send daily summary email"""
@@ -318,20 +387,31 @@ async def send_daily_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         server.quit()
         
-        # Clear today's data after successful email
-        if today in bot_instance.data["daily_jobs"]:
-            del bot_instance.data["daily_jobs"][today]
-        bot_instance.save_data()
-        
         await update.callback_query.edit_message_text(
-            f"✅ המייל נשלח בהצלחה ל-{len(bot_instance.data['emails'])} כתובות!\n"
-            "נתוני היום נמחקו."
+            f"✅ המייל נשלח בהצלחה ל-{len(bot_instance.data['emails'])} כתובות!"
         )
         
     except Exception as e:
         await update.callback_query.edit_message_text(f"❌ שגיאה בשליחת מייל: {str(e)}")
     
-    await start(update, context)
+    await finish_end_day(update, context)
+
+async def finish_end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Finish end of day process"""
+    today = bot_instance.get_today_key()
+    
+    # Clear today's data
+    if today in bot_instance.data["daily_jobs"]:
+        del bot_instance.data["daily_jobs"][today]
+    bot_instance.save_data()
+    
+    keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.callback_query.edit_message_text(
+        "✅ סיום יום הושלם!\nנתוני היום נמחקו.",
+        reply_markup=reply_markup
+    )
 
 async def edit_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show today's jobs for editing/deleting"""
@@ -339,8 +419,12 @@ async def edit_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today_jobs = bot_instance.data["daily_jobs"].get(today, [])
     
     if not today_jobs:
-        await update.callback_query.edit_message_text("אין משימות להיום לעריכה! 📝")
-        await start(update, context)
+        keyboard = [[InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(
+            "אין משימות להיום לעריכה! 📝",
+            reply_markup=reply_markup
+        )
         return
     
     keyboard = []
@@ -360,7 +444,7 @@ async def edit_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_edit_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle job editing (simplified - just show job details)"""
+    """Handle job editing"""
     job_index = int(update.callback_query.data.replace("edit_job_", ""))
     today = bot_instance.get_today_key()
     today_jobs = bot_instance.data["daily_jobs"].get(today, [])
@@ -406,10 +490,13 @@ async def handle_delete_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         bot_instance.save_data()
         
+        keyboard = [[InlineKeyboardButton("🔙 חזור לעריכה", callback_data="edit_delete")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.callback_query.edit_message_text(
-            f"✅ המשימה נמחקה:\n{deleted_job['car_number']} - משימת {deleted_job['job_type']}"
+            f"✅ המשימה נמחקה:\n{deleted_job['car_number']} - משימת {deleted_job['job_type']}",
+            reply_markup=reply_markup
         )
-        await edit_delete(update, context)
 
 async def manage_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manage email addresses"""
@@ -417,7 +504,7 @@ async def manage_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("➕ הוסף מייל", callback_data="add_email")],
-        [InlineKeyboardButton("🗑️ מחק מייל", callback_data="delete_email")],
+        [InlineKeyboardButton("🗑️ מחק מייל", callback_data="delete_email_menu")],
         [InlineKeyboardButton("🏠 תפריט ראשי", callback_data="back_main")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -427,51 +514,84 @@ async def manage_emails(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-async def handle_email_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle email-related actions"""
-    action = update.callback_query.data
+async def add_email_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start adding new email"""
+    context.user_data["state"] = "waiting_email"
+    keyboard = [[InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if action == "add_email":
-        context.user_data["state"] = "waiting_email"
-        await update.callback_query.edit_message_text("הזן כתובת מייל חדשה:")
-    elif action == "delete_email":
-        if len(bot_instance.data["emails"]) <= 1:
-            await update.callback_query.edit_message_text("לא ניתן למחוק - חייבת להיות לפחות כתובת אחת!")
-            await manage_emails(update, context)
-            return
-        
-        keyboard = []
-        for i, email in enumerate(bot_instance.data["emails"]):
-            keyboard.append([InlineKeyboardButton(f"🗑️ {email}", callback_data=f"del_email_{i}")])
-        keyboard.append([InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")])
-        
+    await update.callback_query.edit_message_text(
+        "📧 הזן כתובת מייל חדשה:",
+        reply_markup=reply_markup
+    )
+
+async def delete_email_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show email deletion menu"""
+    if len(bot_instance.data["emails"]) <= 1:
+        keyboard = [[InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.callback_query.edit_message_text("בחר מייל למחיקה:", reply_markup=reply_markup)
-    elif action.startswith("del_email_"):
-        email_index = int(action.replace("del_email_", ""))
-        if email_index < len(bot_instance.data["emails"]):
-            deleted_email = bot_instance.data["emails"].pop(email_index)
-            bot_instance.save_data()
-            await update.callback_query.edit_message_text(f"✅ המייל נמחק: {deleted_email}")
-            await manage_emails(update, context)
+        await update.callback_query.edit_message_text(
+            "❌ לא ניתן למחוק - חייבת להיות לפחות כתובת אחת!",
+            reply_markup=reply_markup
+        )
+        return
+    
+    keyboard = []
+    for i, email in enumerate(bot_instance.data["emails"]):
+        keyboard.append([InlineKeyboardButton(f"🗑️ {email}", callback_data=f"del_email_{i}")])
+    keyboard.append([InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.edit_message_text("בחר מייל למחיקה:", reply_markup=reply_markup)
+
+async def handle_delete_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle email deletion"""
+    email_index = int(update.callback_query.data.replace("del_email_", ""))
+    if email_index < len(bot_instance.data["emails"]):
+        deleted_email = bot_instance.data["emails"].pop(email_index)
+        bot_instance.save_data()
+        
+        keyboard = [[InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            f"✅ המייל נמחק: {deleted_email}",
+            reply_markup=reply_markup
+        )
 
 async def handle_new_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle new email address input"""
     email = update.message.text.strip()
     
     if "@" not in email or "." not in email:
-        await update.message.reply_text("❌ כתובת מייל לא תקינה! נסה שוב:")
+        keyboard = [[InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "❌ כתובת מייל לא תקינה! נסה שוב:",
+            reply_markup=reply_markup
+        )
         return
     
     if email not in bot_instance.data["emails"]:
         bot_instance.data["emails"].append(email)
         bot_instance.save_data()
-        await update.message.reply_text(f"✅ המייל נוסף: {email}")
+        
+        keyboard = [[InlineKeyboardButton("🔙 חזור לניהול מיילים", callback_data="manage_emails")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"✅ המייל נוסף: {email}",
+            reply_markup=reply_markup
+        )
     else:
-        await update.message.reply_text("המייל כבר קיים ברשימה!")
+        keyboard = [[InlineKeyboardButton("🔙 חזור", callback_data="manage_emails")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "❌ המייל כבר קיים ברשימה!",
+            reply_markup=reply_markup
+        )
     
     context.user_data.clear()
-    await start(update, context)
 
 def main():
     """Main function to run the bot"""
