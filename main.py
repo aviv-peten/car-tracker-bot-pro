@@ -6,7 +6,6 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 import os
-import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
@@ -41,6 +40,7 @@ def get_user_data(user_id):
             'current_job': {},
             'daily_jobs': [],
             'state': 'main_menu',
+            'temp_car_number': '',
             'edit_job_index': -1
         }
     return user_data[user_id]
@@ -57,11 +57,12 @@ def get_email_list(user_id):
 
 def format_car_number(number_str):
     """Format 8-digit car number to XXX-XX-XXX"""
-    # Remove all non-digits
-    digits_only = re.sub(r'\D', '', number_str)
-    if len(digits_only) == 8:
-        return f"{digits_only[:3]}-{digits_only[3:5]}-{digits_only[5:]}"
-    return number_str
+    # Remove any existing dashes or spaces
+    clean_number = ''.join(filter(str.isdigit, number_str))
+    
+    if len(clean_number) == 8:
+        return f"{clean_number[:3]}-{clean_number[3:5]}-{clean_number[5:]}"
+    return clean_number
 
 def create_main_menu():
     """Create main menu keyboard"""
@@ -110,6 +111,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if callback_data == "new_car":
         data['state'] = 'car_number'
         data['current_job'] = {}
+        data['temp_car_number'] = ''
         await query.edit_message_text("הכנס מספר רכב (8 ספרות):")
     
     elif callback_data == "end_day":
@@ -204,6 +206,9 @@ async def handle_end_day(query, user_id):
 
 async def handle_email_selection(query, user_id):
     """Handle email selection and sending"""
+    # In a real implementation, you'd show email list management here
+    # For now, we'll just send to the configured email
+    
     data = get_user_data(user_id)
     jobs = data['daily_jobs']
     
@@ -324,16 +329,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     if data['state'] == 'car_number':
-        # Validate car number (8 digits)
-        digits_only = re.sub(r'\D', '', text)
-        if len(digits_only) != 8:
-            await update.message.reply_text(f"מספר רכב חייב להיות 8 ספרות. קיבלתי: {len(digits_only)} ספרות\nהכנס מספר רכב תקין:")
-            return
+        # Validate car number input
+        clean_number = ''.join(filter(str.isdigit, text))
         
-        formatted_number = format_car_number(digits_only)
-        data['current_job']['car_number'] = formatted_number
-        data['state'] = 'pickup_location'
-        await update.message.reply_text("הכנס מיקום איסוף:")
+        if len(clean_number) == 8:
+            # Format and save the car number
+            formatted_number = format_car_number(clean_number)
+            data['current_job']['car_number'] = formatted_number
+            data['state'] = 'pickup_location'
+            await update.message.reply_text(f"מספר רכב: {formatted_number}\nהכנס מיקום איסוף:")
+        else:
+            await update.message.reply_text(f"מספר רכב חייב להיות בדיוק 8 ספרות.\nקיבלתי: {len(clean_number)} ספרות\nנסה שוב:")
     
     elif data['state'] == 'pickup_location':
         data['current_job']['pickup'] = text
