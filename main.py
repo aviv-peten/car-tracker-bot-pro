@@ -100,25 +100,7 @@ def format_car_number(number_str):
         return f"{number_str[:3]}-{number_str[3:5]}-{number_str[5:]}"
     return number_str
 
-def create_number_keyboard():
-    """Create keyboard for car number input"""
-    keyboard = []
-    # Numbers 1-9, 0
-    for i in range(1, 10):
-        if (i-1) % 3 == 0:
-            keyboard.append([])
-        keyboard[-1].append(InlineKeyboardButton(str(i), callback_data=f"num_{i}"))
-    
-    keyboard.append([InlineKeyboardButton("0", callback_data="num_0")])
-    
-    # Control buttons
-    keyboard.append([
-        InlineKeyboardButton("❌ מחק", callback_data="num_delete"),
-        InlineKeyboardButton("✅ אישור", callback_data="num_confirm")
-    ])
-    keyboard.append([InlineKeyboardButton("🔙 חזור לתפריט", callback_data="back_to_menu")])
-    
-    return InlineKeyboardMarkup(keyboard)
+# Removed create_number_keyboard() function since we're using text input now
 
 def create_main_menu():
     """Create main menu keyboard"""
@@ -183,9 +165,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data['temp_car_number'] = ''  # RESET temp number when starting new car
             save_all_data()
             await query.edit_message_text(
-                "🚗 הכנס מספר רכב (8 ספרות):\n\n" +
-                f"מספר נוכחי: {'_'*8}",
-                reply_markup=create_number_keyboard()
+                "🚗 רשום מספר רכב (8 ספרות):\n\n" +
+                "דוגמא: 11111111 ← יהפוך ל 111-11-111"
             )
         
         elif callback_data == "end_day":
@@ -202,10 +183,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🚗 בחר פעולה מהתפריט:",
                 reply_markup=create_main_menu()
             )
-        
-        # Number input handlers
-        elif callback_data.startswith("num_"):
-            await handle_number_input(query, user_id, callback_data)
         
         # Job type handlers
         elif callback_data.startswith("job_"):
@@ -540,7 +517,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
     try:
-        if data['state'] == 'pickup_location':
+        if data['state'] == 'car_number':
+            # Handle car number input
+            if text.isdigit() and len(text) == 8:
+                formatted_number = format_car_number(text)
+                data['current_job']['car_number'] = formatted_number
+                data['state'] = 'pickup_location'
+                save_all_data()
+                await update.message.reply_text(
+                    f"✅ מספר רכב נשמר: {formatted_number}\n\n📍 הכנס מיקום איסוף:"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ מספר רכב חייב להיות בדיוק 8 ספרות!\n\n" +
+                    "דוגמא: 11111111 ← יהפוך ל 111-11-111\n\n" +
+                    "נסה שוב:"
+                )
+        
+        elif data['state'] == 'pickup_location':
             data['current_job']['pickup'] = text
             data['state'] = 'dropoff_location'
             await update.message.reply_text("📍 הכנס מיקום הורדה:")
