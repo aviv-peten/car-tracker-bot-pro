@@ -61,6 +61,13 @@ def get_month_key():
     """Get current month as key"""
     return datetime.now(IST).strftime("%Y-%m")
 
+def get_main_menu_keyboard():
+    """Get main menu keyboard"""
+    return [
+        ["רכב חדש", "סיום יום"],
+        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+    ]
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     user_id = update.effective_user.id
@@ -73,11 +80,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in email_lists:
         email_lists[user_id] = []
     
+    # Reset user state
+    user_data[user_id]['state'] = 'main_menu'
+    
     # Main menu keyboard
-    keyboard = [
-        ["רכב חדש", "סיום יום"],
-        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-    ]
+    keyboard = get_main_menu_keyboard()
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     await update.message.reply_text(
@@ -98,6 +105,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user_state = user_data[user_id].get('state', 'main_menu')
     
+    # Handle main menu options
     if text == "רכב חדש":
         await new_car(update, context)
     elif text == "סיום יום":
@@ -106,6 +114,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_delete(update, context)
     elif text == "סטטיסטיקה חודשית":
         await monthly_stats_handler(update, context)
+    
+    # Handle job type selection
+    elif text in JOB_TYPES.values() and user_state == 'waiting_job_type':
+        await handle_job_type(update, context)
+    
+    # Handle email choice
+    elif text in ["שלח במייל", "דלג"] and user_state == 'waiting_email_choice':
+        await handle_email_choice(update, context)
+    
+    # Handle state-specific inputs
     elif user_state == "waiting_car_number":
         await handle_car_number(update, context)
     elif user_state == "waiting_pickup":
@@ -117,13 +135,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif user_state == "waiting_email":
         await handle_email_input(update, context)
     else:
-        # Return to main menu
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text("אנא בחרו פעולה:", reply_markup=reply_markup)
+        # Return to main menu for any unrecognized input
+        await return_to_main_menu(update, context)
+
+async def return_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Return to main menu"""
+    user_id = update.effective_user.id
+    user_data[user_id]['state'] = 'main_menu'
+    
+    keyboard = get_main_menu_keyboard()
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("אנא בחרו פעולה:", reply_markup=reply_markup)
 
 async def new_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start new car entry process"""
@@ -217,15 +239,12 @@ async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     monthly_stats[user_id][month] += 1
     monthly_stats[user_id][f"{month}_{job_key}"] += 1
     
-    # Reset state
+    # Reset state and return to main menu
     user_data[user_id]['state'] = 'main_menu'
     user_data[user_id]['current_car'] = {}
     
     # Main menu keyboard
-    keyboard = [
-        ["רכב חדש", "סיום יום"],
-        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-    ]
+    keyboard = get_main_menu_keyboard()
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     job_count = len(daily_jobs[user_id][today])
@@ -239,11 +258,11 @@ async def edit_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     today = get_today_key()
     
+    # Reset state
+    user_data[user_id]['state'] = 'main_menu'
+    
     if today not in daily_jobs[user_id] or not daily_jobs[user_id][today]:
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
+        keyboard = get_main_menu_keyboard()
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("אין משימות היום למחיקה או עריכה.", reply_markup=reply_markup)
         return
@@ -264,6 +283,9 @@ async def monthly_stats_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     current_date = datetime.now(IST)
     
+    # Reset state
+    user_data[user_id]['state'] = 'main_menu'
+    
     stats_text = "📊 סטטיסטיקה חודשית:\n\n"
     
     # Show stats for current month and 3 months back
@@ -281,10 +303,7 @@ async def monthly_stats_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 stats_text += f"  • {job_name}: {count}\n"
         stats_text += "\n"
     
-    keyboard = [
-        ["רכב חדש", "סיום יום"],
-        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-    ]
+    keyboard = get_main_menu_keyboard()
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     await update.message.reply_text(stats_text, reply_markup=reply_markup)
@@ -295,10 +314,7 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = get_today_key()
     
     if today not in daily_jobs[user_id] or not daily_jobs[user_id][today]:
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
+        keyboard = get_main_menu_keyboard()
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("אין משימות היום.", reply_markup=reply_markup)
         return
@@ -335,6 +351,7 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Store summary for email
     user_data[user_id]['daily_summary'] = summary
+    user_data[user_id]['state'] = 'waiting_email_choice'
     
     # Email options
     keyboard = [
@@ -357,10 +374,8 @@ async def handle_email_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         if today in daily_jobs[user_id]:
             del daily_jobs[user_id][today]
         
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
+        user_data[user_id]['state'] = 'main_menu'
+        keyboard = get_main_menu_keyboard()
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("יום חדש התחיל! בהצלחה!", reply_markup=reply_markup)
 
@@ -462,10 +477,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("המשימה נמחקה בהצלחה!")
             
         # Return to main menu
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
+        user_data[user_id]['state'] = 'main_menu'
+        keyboard = get_main_menu_keyboard()
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await context.bot.send_message(user_id, "חזרה לתפריט הראשי:", reply_markup=reply_markup)
         
@@ -493,18 +506,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("שגיאה בשליחת המיילים.")
         
         # Return to main menu
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
+        user_data[user_id]['state'] = 'main_menu'
+        keyboard = get_main_menu_keyboard()
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await context.bot.send_message(user_id, "חזרה לתפריט הראשי:", reply_markup=reply_markup)
         
     elif data == "main_menu":
-        keyboard = [
-            ["רכב חדש", "סיום יום"],
-            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
-        ]
+        user_data[user_id]['state'] = 'main_menu'
+        keyboard = get_main_menu_keyboard()
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await query.edit_message_text("תפריט ראשי:")
         await context.bot.send_message(user_id, "אנא בחרו פעולה:", reply_markup=reply_markup)
@@ -537,11 +546,7 @@ def main():
     # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.Regex("^(משימת שינוע|משימת טרמפ|משימת סרק|משימת מוסך|משימת טסט)$"), handle_job_type))
-    app.add_handler(MessageHandler(filters.Regex("^(שלח במייל|דלג)$"), handle_email_choice))
     
     # Start the bot
     app.run_polling(allowed_updates=Update.ALL_TYPES)
