@@ -179,9 +179,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data['state'] = 'car_number'
             data['current_job'] = {}
             data['temp_car_number'] = ''
+            save_all_data()
             await query.edit_message_text(
                 "🚗 הכנס מספר רכב (8 ספרות):\n\n" +
-                f"מספר נוכחי: {data['temp_car_number'] if data['temp_car_number'] else '_'*8}",
+                f"מספר נוכחי: {'_'*8}",
                 reply_markup=create_number_keyboard()
             )
         
@@ -193,6 +194,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif callback_data == "back_to_menu":
             data['state'] = 'main_menu'
+            data['temp_car_number'] = ''
+            save_all_data()
             await query.edit_message_text(
                 "🚗 בחר פעולה מהתפריט:",
                 reply_markup=create_main_menu()
@@ -266,46 +269,59 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_number_input(query, user_id, callback_data):
-    """Handle number input for car number"""
+    """Handle number input for car number - FIXED VERSION"""
     data = get_user_data(user_id)
     
     if callback_data == "num_delete":
+        # Delete last digit
         if data['temp_car_number']:
             data['temp_car_number'] = data['temp_car_number'][:-1]
     elif callback_data == "num_confirm":
+        # Confirm number input
         if len(data['temp_car_number']) == 8:
             formatted_number = format_car_number(data['temp_car_number'])
             data['current_job']['car_number'] = formatted_number
             data['state'] = 'pickup_location'
-            await query.edit_message_text("📍 הכנס מיקום איסוף:")
             save_all_data()
+            await query.edit_message_text("📍 הכנס מיקום איסוף:")
             return
         else:
+            # Show error for incomplete number
             await query.edit_message_text(
                 f"❌ מספר רכב חייב להיות 8 ספרות!\n"
                 f"נוכחי: {len(data['temp_car_number'])} ספרות\n\n"
-                f"מספר נוכחי: {data['temp_car_number'] or '_'*8}",
+                f"מספר נוכחי: {data['temp_car_number'] or ('_'*8)}",
                 reply_markup=create_number_keyboard()
             )
+            save_all_data()
             return
     else:
-        # Add number
+        # Add number digit
         number = callback_data.replace("num_", "")
         if len(data['temp_car_number']) < 8:
             data['temp_car_number'] += number
     
-    # Update display
-    display_number = data['temp_car_number']
-    remaining = 8 - len(display_number)
-    display_with_format = display_number + ('_' * remaining)
+    # Update display with current number
+    current_number = data['temp_car_number']
+    remaining = 8 - len(current_number)
     
-    if len(display_number) == 8:
-        display_with_format = format_car_number(display_number)
+    # Create display string
+    if len(current_number) == 8:
+        display_text = format_car_number(current_number)
+    else:
+        display_text = current_number + ('_' * remaining)
     
+    # Status message
+    status_msg = f"🚗 הכנס מספר רכב (8 ספרות):\n\n"
+    status_msg += f"מספר נוכחי: {display_text}\n"
+    if remaining > 0:
+        status_msg += f"נותרו: {remaining} ספרות"
+    else:
+        status_msg += "✅ מוכן לאישור!"
+    
+    # Update the message
     await query.edit_message_text(
-        f"🚗 הכנס מספר רכב (8 ספרות):\n\n"
-        f"מספר נוכחי: {display_with_format}\n"
-        f"נותרו: {remaining} ספרות",
+        status_msg,
         reply_markup=create_number_keyboard()
     )
     save_all_data()
