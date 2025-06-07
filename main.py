@@ -153,7 +153,9 @@ def create_yes_no_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
     user_id = update.effective_user.id
-    get_user_data(user_id)['state'] = 'main_menu'
+    data = get_user_data(user_id)
+    data['state'] = 'main_menu'
+    data['temp_car_number'] = ''  # Clear any previous temp number
     save_all_data()
     
     welcome_msg = "🚗 ברוך הבא למערכת מעקב רכבים!\n\n"
@@ -178,7 +180,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if callback_data == "new_car":
             data['state'] = 'car_number'
             data['current_job'] = {}
-            data['temp_car_number'] = ''
+            data['temp_car_number'] = ''  # RESET temp number when starting new car
             save_all_data()
             await query.edit_message_text(
                 "🚗 הכנס מספר רכב (8 ספרות):\n\n" +
@@ -194,7 +196,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif callback_data == "back_to_menu":
             data['state'] = 'main_menu'
-            data['temp_car_number'] = ''
+            data['temp_car_number'] = ''  # CLEAR temp number when going back
             save_all_data()
             await query.edit_message_text(
                 "🚗 בחר פעולה מהתפריט:",
@@ -230,6 +232,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=create_main_menu()
             )
             data['state'] = 'main_menu'
+            data['temp_car_number'] = ''  # CLEAR temp number after job completion
             save_all_data()
         
         # Email handlers
@@ -269,37 +272,52 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def handle_number_input(query, user_id, callback_data):
-    """Handle number input for car number - FIXED VERSION"""
+    """Handle number input for car number - COMPLETELY FIXED VERSION"""
     data = get_user_data(user_id)
     
+    # Ensure temp_car_number is initialized
+    if 'temp_car_number' not in data:
+        data['temp_car_number'] = ''
+    
+    # Handle different button presses
     if callback_data == "num_delete":
         # Delete last digit
         if data['temp_car_number']:
             data['temp_car_number'] = data['temp_car_number'][:-1]
+        
     elif callback_data == "num_confirm":
         # Confirm number input
         if len(data['temp_car_number']) == 8:
             formatted_number = format_car_number(data['temp_car_number'])
             data['current_job']['car_number'] = formatted_number
             data['state'] = 'pickup_location'
+            # DON'T clear temp_car_number here - wait until job is complete
             save_all_data()
             await query.edit_message_text("📍 הכנס מיקום איסוף:")
             return
         else:
             # Show error for incomplete number
+            remaining = 8 - len(data['temp_car_number'])
+            display_text = data['temp_car_number'] + ('_' * remaining)
+            
             await query.edit_message_text(
                 f"❌ מספר רכב חייב להיות 8 ספרות!\n"
-                f"נוכחי: {len(data['temp_car_number'])} ספרות\n\n"
-                f"מספר נוכחי: {data['temp_car_number'] or ('_'*8)}",
+                f"נוכחי: {len(data['temp_car_number'])} ספרות\n"
+                f"נותרו: {remaining} ספרות\n\n"
+                f"מספר נוכחי: {display_text}",
                 reply_markup=create_number_keyboard()
             )
             save_all_data()
             return
+    
     else:
         # Add number digit
         number = callback_data.replace("num_", "")
         if len(data['temp_car_number']) < 8:
             data['temp_car_number'] += number
+        else:
+            # If already 8 digits, don't add more
+            pass
     
     # Update display with current number
     current_number = data['temp_car_number']
@@ -319,12 +337,14 @@ async def handle_number_input(query, user_id, callback_data):
     else:
         status_msg += "✅ מוכן לאישור!"
     
+    # Save data before updating message
+    save_all_data()
+    
     # Update the message
     await query.edit_message_text(
         status_msg,
         reply_markup=create_number_keyboard()
     )
-    save_all_data()
 
 async def handle_end_day(query, user_id):
     """Handle end of day statistics"""
@@ -418,6 +438,7 @@ async def handle_email_selection(query, user_id):
         # Clear daily data after successful email send
         data['daily_jobs'] = []
         data['state'] = 'main_menu'
+        data['temp_car_number'] = ''  # CLEAR temp number after email send
         
         await query.edit_message_text(
             "✅ הדו\"ח נשלח בהצלחה!\n"
@@ -544,6 +565,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=create_main_menu()
             )
             data['state'] = 'main_menu'
+            data['temp_car_number'] = ''  # CLEAR temp number on unexpected state
         
         save_all_data()
         
