@@ -1,595 +1,550 @@
 import logging
-import sqlite3
+import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from collections import defaultdict
+import pytz
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import re
-import json
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Bot token
-BOT_TOKEN = "8195716721:AAGfrro7LCy1WTr4QcCZgtnIJvt3M6CdVI"
+BOT_TOKEN = "8195716721:AAGfrro7LCy1WTr4QccCZgtnIJvt3M6CdVI"
 
-# Email configuration
+# Email configuration  
 EMAIL_USER = "Avivpeten123456789@gmail.com"
 EMAIL_PASSWORD = "ycqx xqaf xicz ywgi"
 
 # Job types in Hebrew
 JOB_TYPES = {
-    'שינוע': 'משימת שינוע',
-    'טרמפ': 'משימת טרמפ', 
-    'סרק': 'משימת סרק',
-    'מוסך': 'משימת מוסך',
-    'טסט': 'משימת טסט'
+    "שינוע": "משימת שינוע",
+    "טרמפ": "משימת טרמפ", 
+    "סרק": "משימת סרק",
+    "מוסך": "משימת מוסך",
+    "טסט": "משימת טסט"
 }
 
-# Database setup
-def init_db():
-    conn = sqlite3.connect('car_jobs.db')
-    c = conn.cursor()
-    
-    # Cars table
-    c.execute('''CREATE TABLE IF NOT EXISTS cars
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  car_number TEXT,
-                  pickup_location TEXT,
-                  delivery_location TEXT,
-                  notes TEXT,
-                  job_type TEXT,
-                  date TEXT,
-                  time TEXT,
-                  user_id INTEGER)''')
-    
-    # Email list table
-    c.execute('''CREATE TABLE IF NOT EXISTS emails
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  email TEXT UNIQUE,
-                  user_id INTEGER)''')
-    
-    conn.commit()
-    conn.close()
+# Data storage
+user_data = {}
+daily_jobs = {}
+monthly_stats = defaultdict(lambda: defaultdict(int))
+email_lists = {}
 
-# User states for conversation handling
-USER_STATES = {}
-TEMP_CAR_DATA = {}
+# Israel timezone
+IST = pytz.timezone('Asia/Jerusalem')
 
-class UserState:
-    MAIN_MENU = 0
-    WAITING_CAR_NUMBER = 1
-    WAITING_PICKUP = 2
-    WAITING_DELIVERY = 3
-    WAITING_NOTES = 4
-    WAITING_JOB_TYPE = 5
-    EDIT_DELETE_MENU = 6
-    WAITING_EMAIL = 7
-    EMAIL_MANAGEMENT = 8
+def format_car_number(car_num):
+    """Format 8-digit car number to XXX-XX-XXX format"""
+    if len(car_num) == 8 and car_num.isdigit():
+        return f"{car_num[:3]}-{car_num[3:5]}-{car_num[5:]}"
+    return car_num
 
-def get_main_keyboard():
-    keyboard = [
-        ['רכב חדש', 'סיום יום'],
-        ['עריכה/מחיקה', 'סטטיסטיקה חודשית']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+def get_current_time():
+    """Get current time in Israel timezone"""
+    return datetime.now(IST).strftime("%H:%M")
 
-def get_job_type_keyboard():
-    keyboard = [
-        ['משימת שינוע', 'משימת טרמפ'],
-        ['משימת סרק', 'משימת מוסך'],
-        ['משימת טסט']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+def get_today_key():
+    """Get today's date as key"""
+    return datetime.now(IST).strftime("%Y-%m-%d")
 
-def get_email_keyboard():
-    keyboard = [
-        ['כן', 'דלג']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def format_car_number(car_number):
-    """Format 8-digit car number to XXX-XX-XXX"""
-    if len(car_number) == 8 and car_number.isdigit():
-        return f"{car_number[:3]}-{car_number[3:5]}-{car_number[5:]}"
-    return car_number
+def get_month_key():
+    """Get current month as key"""
+    return datetime.now(IST).strftime("%Y-%m")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start command handler"""
     user_id = update.effective_user.id
-    USER_STATES[user_id] = UserState.MAIN_MENU
+    
+    # Initialize user data
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    if user_id not in daily_jobs:
+        daily_jobs[user_id] = {}
+    if user_id not in email_lists:
+        email_lists[user_id] = []
+    
+    # Main menu keyboard
+    keyboard = [
+        ["רכב חדש", "סיום יום"],
+        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     await update.message.reply_text(
-        'ברוך הבא לבוט ניהול רכבים! 🚗\nבחר פעולה:',
-        reply_markup=get_main_keyboard()
+        "ברוכים הבאים לבוט מעקב רכבים!\nאנא בחרו פעולה:",
+        reply_markup=reply_markup
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all text messages"""
     user_id = update.effective_user.id
     text = update.message.text
     
-    if user_id not in USER_STATES:
-        USER_STATES[user_id] = UserState.MAIN_MENU
+    # Initialize user data if needed
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    if user_id not in daily_jobs:
+        daily_jobs[user_id] = {}
+        
+    user_state = user_data[user_id].get('state', 'main_menu')
     
-    state = USER_STATES[user_id]
-    
-    if text == 'רכב חדש':
+    if text == "רכב חדש":
         await new_car(update, context)
-    elif text == 'סיום יום':
-        await end_of_day(update, context)
-    elif text == 'עריכה/מחיקה':
-        await edit_delete_menu(update, context)
-    elif text == 'סטטיסטיקה חודשית':
-        await monthly_stats(update, context)
-    elif state == UserState.WAITING_CAR_NUMBER:
+    elif text == "סיום יום":
+        await end_day(update, context)
+    elif text == "עריכה/מחיקה":
+        await edit_delete(update, context)
+    elif text == "סטטיסטיקה חודשית":
+        await monthly_stats_handler(update, context)
+    elif user_state == "waiting_car_number":
         await handle_car_number(update, context)
-    elif state == UserState.WAITING_PICKUP:
+    elif user_state == "waiting_pickup":
         await handle_pickup(update, context)
-    elif state == UserState.WAITING_DELIVERY:
+    elif user_state == "waiting_delivery":
         await handle_delivery(update, context)
-    elif state == UserState.WAITING_NOTES:
+    elif user_state == "waiting_notes":
         await handle_notes(update, context)
-    elif state == UserState.WAITING_JOB_TYPE:
-        await handle_job_type(update, context)
-    elif state == UserState.WAITING_EMAIL:
-        await handle_email_choice(update, context)
+    elif user_state == "waiting_email":
+        await handle_email_input(update, context)
     else:
-        await update.message.reply_text(
-            'אנא בחר פעולה מהתפריט הראשי:',
-            reply_markup=get_main_keyboard()
-        )
+        # Return to main menu
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("אנא בחרו פעולה:", reply_markup=reply_markup)
 
 async def new_car(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start new car entry process"""
     user_id = update.effective_user.id
-    USER_STATES[user_id] = UserState.WAITING_CAR_NUMBER
-    TEMP_CAR_DATA[user_id] = {}
+    user_data[user_id]['state'] = 'waiting_car_number'
+    user_data[user_id]['current_car'] = {}
     
-    await update.message.reply_text('אנא הכנס מספר רכב (8 ספרות):')
+    await update.message.reply_text(
+        "אנא הזינו מספר רכב (8 ספרות):",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
 async def handle_car_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle car number input"""
     user_id = update.effective_user.id
-    car_number = update.message.text.strip()
+    car_num = update.message.text.strip()
     
-    if len(car_number) == 8 and car_number.isdigit():
-        formatted_number = format_car_number(car_number)
-        TEMP_CAR_DATA[user_id]['car_number'] = formatted_number
-        USER_STATES[user_id] = UserState.WAITING_PICKUP
-        
-        await update.message.reply_text(f'מספר רכב: {formatted_number}\nמאיפה נאסף הרכב?')
-    else:
-        await update.message.reply_text('אנא הכנס מספר רכב תקין (8 ספרות):')
+    if len(car_num) != 8 or not car_num.isdigit():
+        await update.message.reply_text("אנא הזינו מספר רכב של 8 ספרות בדיוק:")
+        return
+    
+    formatted_num = format_car_number(car_num)
+    user_data[user_id]['current_car']['number'] = formatted_num
+    user_data[user_id]['current_car']['time'] = get_current_time()
+    user_data[user_id]['state'] = 'waiting_pickup'
+    
+    await update.message.reply_text(f"מספר רכב: {formatted_num}\nמאיפה נאסף הרכב?")
 
 async def handle_pickup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle pickup location input"""
     user_id = update.effective_user.id
-    pickup_location = update.message.text.strip()
+    pickup = update.message.text.strip()
     
-    TEMP_CAR_DATA[user_id]['pickup_location'] = pickup_location
-    USER_STATES[user_id] = UserState.WAITING_DELIVERY
+    user_data[user_id]['current_car']['pickup'] = pickup
+    user_data[user_id]['state'] = 'waiting_delivery'
     
-    await update.message.reply_text('איפה נמסר הרכב?')
+    await update.message.reply_text("איפה נמסר הרכב?")
 
 async def handle_delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle delivery location input"""
     user_id = update.effective_user.id
-    delivery_location = update.message.text.strip()
+    delivery = update.message.text.strip()
     
-    TEMP_CAR_DATA[user_id]['delivery_location'] = delivery_location
-    USER_STATES[user_id] = UserState.WAITING_NOTES
+    user_data[user_id]['current_car']['delivery'] = delivery
+    user_data[user_id]['state'] = 'waiting_notes'
     
-    await update.message.reply_text('הערות (אופציונלי):')
+    await update.message.reply_text("הערות (אופציונלי):")
 
 async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle notes input and show job type selection"""
     user_id = update.effective_user.id
     notes = update.message.text.strip()
     
-    TEMP_CAR_DATA[user_id]['notes'] = notes
-    USER_STATES[user_id] = UserState.WAITING_JOB_TYPE
+    user_data[user_id]['current_car']['notes'] = notes
+    user_data[user_id]['state'] = 'waiting_job_type'
+    
+    # Job type keyboard
+    keyboard = [
+        ["משימת שינוע", "משימת טרמפ"],
+        ["משימת סרק", "משימת מוסך"],
+        ["משימת טסט"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     await update.message.reply_text(
-        'איזה משימה עשיתה?',
-        reply_markup=get_job_type_keyboard()
+        "איזה משימה עשיתה?",
+        reply_markup=reply_markup
     )
 
 async def handle_job_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle job type selection"""
     user_id = update.effective_user.id
     job_type = update.message.text.strip()
     
-    if job_type in JOB_TYPES.values():
-        TEMP_CAR_DATA[user_id]['job_type'] = job_type
-        
-        # Save to database
-        conn = sqlite3.connect('car_jobs.db')
-        c = conn.cursor()
-        
-        now = datetime.now()
-        date_str = now.strftime('%Y-%m-%d')
-        time_str = now.strftime('%H:%M')
-        
-        c.execute('''INSERT INTO cars 
-                     (car_number, pickup_location, delivery_location, notes, job_type, date, time, user_id)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                  (TEMP_CAR_DATA[user_id]['car_number'],
-                   TEMP_CAR_DATA[user_id]['pickup_location'],
-                   TEMP_CAR_DATA[user_id]['delivery_location'],
-                   TEMP_CAR_DATA[user_id]['notes'],
-                   job_type,
-                   date_str,
-                   time_str,
-                   user_id))
-        
-        conn.commit()
-        conn.close()
-        
-        USER_STATES[user_id] = UserState.MAIN_MENU
-        
-        await update.message.reply_text(
-            f'✅ המשימה נשמרה בהצלחה!\n'
-            f'רכב: {TEMP_CAR_DATA[user_id]["car_number"]}\n'
-            f'שעה: {time_str}',
-            reply_markup=get_main_keyboard()
-        )
-        
-        # Clear temp data
-        del TEMP_CAR_DATA[user_id]
-    else:
-        await update.message.reply_text(
-            'אנא בחר סוג משימה מהאפשרויות:',
-            reply_markup=get_job_type_keyboard()
-        )
-
-async def edit_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # Get today's cars
-    conn = sqlite3.connect('car_jobs.db')
-    c = conn.cursor()
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    c.execute('''SELECT id, car_number, pickup_location, delivery_location, job_type, time
-                 FROM cars WHERE user_id = ? AND date = ?
-                 ORDER BY time''', (user_id, today))
-    
-    cars = c.fetchall()
-    conn.close()
-    
-    if not cars:
-        await update.message.reply_text(
-            'אין משימות להיום לעריכה או מחיקה.',
-            reply_markup=get_main_keyboard()
-        )
+    if job_type not in JOB_TYPES.values():
+        await update.message.reply_text("אנא בחרו סוג משימה מהרשימה:")
         return
     
-    keyboard = []
-    message = "בחר משימה לעריכה/מחיקה:\n\n"
+    # Save the job
+    today = get_today_key()
+    if today not in daily_jobs[user_id]:
+        daily_jobs[user_id][today] = []
     
-    for i, car in enumerate(cars, 1):
-        car_id, car_number, pickup, delivery, job_type, time = car
-        message += f"{i}. {car_number} ({time})\n   {pickup} → {delivery}\n   {job_type}\n\n"
-        keyboard.append([InlineKeyboardButton(f"מחק משימה {i}", callback_data=f"delete_{car_id}")])
+    car_data = user_data[user_id]['current_car'].copy()
+    car_data['job_type'] = job_type
+    daily_jobs[user_id][today].append(car_data)
     
-    keyboard.append([InlineKeyboardButton("חזור לתפריט", callback_data="back_to_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Update monthly stats
+    month = get_month_key()
+    job_key = list(JOB_TYPES.keys())[list(JOB_TYPES.values()).index(job_type)]
+    monthly_stats[user_id][month] += 1
+    monthly_stats[user_id][f"{month}_{job_key}"] += 1
     
-    await update.message.reply_text(message, reply_markup=reply_markup)
-
-async def monthly_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    # Reset state
+    user_data[user_id]['state'] = 'main_menu'
+    user_data[user_id]['current_car'] = {}
     
-    conn = sqlite3.connect('car_jobs.db')
-    c = conn.cursor()
+    # Main menu keyboard
+    keyboard = [
+        ["רכב חדש", "סיום יום"],
+        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
-    # Get stats for current month and 3 months back
-    stats_message = "📊 סטטיסטיקה חודשית:\n\n"
-    
-    for months_back in range(4):  # Current month + 3 months back
-        date = datetime.now() - timedelta(days=months_back*30)
-        month_year = date.strftime('%Y-%m')
-        month_name = date.strftime('%m/%Y')
-        
-        c.execute('''SELECT job_type, COUNT(*) FROM cars 
-                     WHERE user_id = ? AND date LIKE ?
-                     GROUP BY job_type''', (user_id, f"{month_year}%"))
-        
-        monthly_jobs = c.fetchall()
-        
-        if monthly_jobs:
-            total = sum(count for _, count in monthly_jobs)
-            stats_message += f"🗓️ {month_name} - סך הכל: {total}\n"
-            
-            for job_type, count in monthly_jobs:
-                stats_message += f"   • {job_type}: {count}\n"
-            stats_message += "\n"
-    
-    conn.close()
-    
-    if "סך הכל:" not in stats_message:
-        stats_message += "אין נתונים להצגה."
-    
-    await update.message.reply_text(stats_message, reply_markup=get_main_keyboard())
-
-async def end_of_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    conn = sqlite3.connect('car_jobs.db')
-    c = conn.cursor()
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    # Get today's summary
-    c.execute('''SELECT job_type, COUNT(*) FROM cars 
-                 WHERE user_id = ? AND date = ?
-                 GROUP BY job_type''', (user_id, today))
-    
-    job_counts = dict(c.fetchall())
-    
-    # Get all jobs for detailed report
-    c.execute('''SELECT car_number, pickup_location, delivery_location, notes, job_type, time
-                 FROM cars WHERE user_id = ? AND date = ?
-                 ORDER BY time''', (user_id, today))
-    
-    all_jobs = c.fetchall()
-    conn.close()
-    
-    total_jobs = sum(job_counts.values())
-    
-    if total_jobs == 0:
-        await update.message.reply_text(
-            'אין משימות להיום.',
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    # Create summary message
-    summary = f"📋 סיכום יום {datetime.now().strftime('%d/%m/%Y')}\n\n"
-    summary += f"סך כולל המשימות: {total_jobs}\n"
-    
-    for job_type in JOB_TYPES.values():
-        count = job_counts.get(job_type, 0)
-        job_name = job_type.replace('משימת ', 'משימות ')
-        summary += f"{job_name}: {count}\n"
-    
-    summary += "\n" + "="*30 + "\n\n"
-    
-    # Add detailed jobs
-    for i, job in enumerate(all_jobs, 1):
-        car_number, pickup, delivery, notes, job_type, time = job
-        summary += f"משימה {i}\n"
-        summary += f"מספר רכב: {car_number}\n"
-        summary += f"נאסף: {pickup}\n"
-        summary += f"נמסר: {delivery}\n"
-        summary += f"הערות: {notes if notes else 'ללא'}\n"
-        summary += f"סוג משימה: {job_type}\n"
-        summary += f"שעה: {time}\n"
-        summary += "-" * 20 + "\n\n"
-    
-    # Store summary for email
-    context.user_data['daily_summary'] = summary
-    USER_STATES[user_id] = UserState.WAITING_EMAIL
-    
+    job_count = len(daily_jobs[user_id][today])
     await update.message.reply_text(
-        summary + "\nהאם לשלוח בדוא\"ל?",
-        reply_markup=get_email_keyboard()
+        f"המשימה נשמרה בהצלחה!\nסך הכל משימות היום: {job_count}",
+        reply_markup=reply_markup
     )
 
+async def edit_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show today's jobs for editing/deleting"""
+    user_id = update.effective_user.id
+    today = get_today_key()
+    
+    if today not in daily_jobs[user_id] or not daily_jobs[user_id][today]:
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("אין משימות היום למחיקה או עריכה.", reply_markup=reply_markup)
+        return
+    
+    # Create inline keyboard for each job
+    keyboard = []
+    for i, job in enumerate(daily_jobs[user_id][today]):
+        job_text = f"משימה {i+1}: {job['number']} - {job['job_type']}"
+        keyboard.append([InlineKeyboardButton(f"🗑 מחק {job_text}", callback_data=f"delete_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("חזור לתפריט הראשי", callback_data="main_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text("בחרו משימה למחיקה:", reply_markup=reply_markup)
+
+async def monthly_stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show monthly statistics"""
+    user_id = update.effective_user.id
+    current_date = datetime.now(IST)
+    
+    stats_text = "📊 סטטיסטיקה חודשית:\n\n"
+    
+    # Show stats for current month and 3 months back
+    for i in range(4):
+        month_date = current_date - timedelta(days=30*i)
+        month_key = month_date.strftime("%Y-%m")
+        month_name = month_date.strftime("%m/%Y")
+        
+        total_jobs = monthly_stats[user_id].get(month_key, 0)
+        stats_text += f"📅 {month_name}: {total_jobs} משימות\n"
+        
+        for job_key, job_name in JOB_TYPES.items():
+            count = monthly_stats[user_id].get(f"{month_key}_{job_key}", 0)
+            if count > 0:
+                stats_text += f"  • {job_name}: {count}\n"
+        stats_text += "\n"
+    
+    keyboard = [
+        ["רכב חדש", "סיום יום"],
+        ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(stats_text, reply_markup=reply_markup)
+
+async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """End day summary"""
+    user_id = update.effective_user.id
+    today = get_today_key()
+    
+    if today not in daily_jobs[user_id] or not daily_jobs[user_id][today]:
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("אין משימות היום.", reply_markup=reply_markup)
+        return
+    
+    jobs = daily_jobs[user_id][today]
+    total_jobs = len(jobs)
+    
+    # Count job types
+    job_counts = defaultdict(int)
+    for job in jobs:
+        job_key = list(JOB_TYPES.keys())[list(JOB_TYPES.values()).index(job['job_type'])]
+        job_counts[job_key] += 1
+    
+    # Create summary
+    summary = f"📊 סיכום יום {datetime.now(IST).strftime('%d/%m/%Y')}:\n\n"
+    summary += f"סך כולל המשימות: {total_jobs}\n"
+    
+    for job_key, job_name in JOB_TYPES.items():
+        count = job_counts[job_key]
+        summary += f"{job_name}: {count}\n"
+    
+    summary += "\n" + "="*30 + "\n"
+    
+    # Add detailed job list
+    for i, job in enumerate(jobs, 1):
+        summary += f"\nמשימה {i}:\n"
+        summary += f"מספר רכב: {job['number']}\n"
+        summary += f"נאסף: {job['pickup']}\n"
+        summary += f"נמסר: {job['delivery']}\n"
+        summary += f"הערות: {job['notes']}\n"
+        summary += f"סוג משימה: {job['job_type']}\n"
+        summary += f"שעה: {job['time']}\n"
+        summary += "-" * 20 + "\n"
+    
+    # Store summary for email
+    user_data[user_id]['daily_summary'] = summary
+    
+    # Email options
+    keyboard = [
+        ["שלח במייל", "דלג"],
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(summary + "\nלשלוח במייל?", reply_markup=reply_markup)
+
 async def handle_email_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle email sending choice"""
     user_id = update.effective_user.id
     choice = update.message.text.strip()
     
-    if choice == 'דלג':
-        # Clear today's data
-        conn = sqlite3.connect('car_jobs.db')
-        c = conn.cursor()
-        today = datetime.now().strftime('%Y-%m-%d')
-        c.execute('DELETE FROM cars WHERE user_id = ? AND date = ?', (user_id, today))
-        conn.commit()
-        conn.close()
+    if choice == "שלח במייל":
+        await show_email_list(update, context)
+    elif choice == "דלג":
+        # Clear today's jobs and return to main menu
+        today = get_today_key()
+        if today in daily_jobs[user_id]:
+            del daily_jobs[user_id][today]
         
-        USER_STATES[user_id] = UserState.MAIN_MENU
-        await update.message.reply_text(
-            '✅ יום עבודה הסתיים! הנתונים נמחקו.',
-            reply_markup=get_main_keyboard()
-        )
-        
-    elif choice == 'כן':
-        await show_email_management(update, context)
-    else:
-        await update.message.reply_text(
-            'אנא בחר "כן" או "דלג":',
-            reply_markup=get_email_keyboard()
-        )
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("יום חדש התחיל! בהצלחה!", reply_markup=reply_markup)
 
-async def show_email_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_email_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show email list management"""
     user_id = update.effective_user.id
     
-    conn = sqlite3.connect('car_jobs.db')
-    c = conn.cursor()
-    c.execute('SELECT email FROM emails WHERE user_id = ?', (user_id,))
-    emails = [row[0] for row in c.fetchall()]
-    conn.close()
+    if not email_lists[user_id]:
+        user_data[user_id]['state'] = 'waiting_email'
+        await update.message.reply_text("אין כתובות מייל ברשימה.\nהזינו כתובת מייל:")
+        return
     
+    # Show current emails with options
     keyboard = []
+    for i, email in enumerate(email_lists[user_id]):
+        keyboard.append([InlineKeyboardButton(f"🗑 מחק {email}", callback_data=f"delete_email_{i}")])
     
-    if emails:
-        message = "📧 כתובות דוא\"ל:\n\n"
-        for i, email in enumerate(emails, 1):
-            message += f"{i}. {email}\n"
-            keyboard.append([InlineKeyboardButton(f"מחק {email}", callback_data=f"del_email_{i-1}")])
-        message += "\n"
-    else:
-        message = "אין כתובות דוא\"ל שמורות.\n\n"
-    
-    keyboard.extend([
-        [InlineKeyboardButton("הוסף כתובת דוא\"ל", callback_data="add_email")],
-        [InlineKeyboardButton("שלח דוא\"ל", callback_data="send_email")],
-        [InlineKeyboardButton("חזור לתפריט", callback_data="back_to_menu")]
-    ])
+    keyboard.append([InlineKeyboardButton("➕ הוסף מייל חדש", callback_data="add_email")])
+    keyboard.append([InlineKeyboardButton("📧 שלח לכולם", callback_data="send_emails")])
+    keyboard.append([InlineKeyboardButton("חזור לתפריט", callback_data="main_menu")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(message, reply_markup=reply_markup)
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
     
-    user_id = update.effective_user.id
-    data = query.data
-    
-    if data.startswith('delete_'):
-        car_id = int(data.split('_')[1])
-        
-        conn = sqlite3.connect('car_jobs.db')
-        c = conn.cursor()
-        c.execute('DELETE FROM cars WHERE id = ? AND user_id = ?', (car_id, user_id))
-        conn.commit()
-        conn.close()
-        
-        await query.edit_message_text(
-            '✅ המשימה נמחקה בהצלחה!',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("חזור לתפריט", callback_data="back_to_menu")]])
-        )
-        
-    elif data == 'back_to_menu':
-        USER_STATES[user_id] = UserState.MAIN_MENU
-        await query.edit_message_text('תפריט ראשי:')
-        await context.bot.send_message(
-            chat_id=user_id,
-            text='בחר פעולה:',
-            reply_markup=get_main_keyboard()
-        )
-        
-    elif data == 'add_email':
-        USER_STATES[user_id] = UserState.EMAIL_MANAGEMENT
-        await query.edit_message_text('אנא הכנס כתובת דוא\"ל:')
-        
-    elif data == 'send_email':
-        await send_daily_email(update, context, query)
-        
-    elif data.startswith('del_email_'):
-        email_index = int(data.split('_')[2])
-        
-        conn = sqlite3.connect('car_jobs.db')
-        c = conn.cursor()
-        c.execute('SELECT email FROM emails WHERE user_id = ?', (user_id,))
-        emails = [row[0] for row in c.fetchall()]
-        
-        if 0 <= email_index < len(emails):
-            email_to_delete = emails[email_index]
-            c.execute('DELETE FROM emails WHERE email = ? AND user_id = ?', (email_to_delete, user_id))
-            conn.commit()
-        
-        conn.close()
-        
-        await show_email_management(update, context)
+    emails_text = "📧 רשימת מיילים:\n" + "\n".join(email_lists[user_id])
+    await update.message.reply_text(emails_text, reply_markup=reply_markup)
 
-async def handle_email_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_email_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle new email input"""
     user_id = update.effective_user.id
     email = update.message.text.strip()
     
-    # Basic email validation
-    if '@' in email and '.' in email:
-        conn = sqlite3.connect('car_jobs.db')
-        c = conn.cursor()
-        
-        try:
-            c.execute('INSERT INTO emails (email, user_id) VALUES (?, ?)', (email, user_id))
-            conn.commit()
-            await update.message.reply_text(f'✅ כתובת הדוא\"ל {email} נוספה!')
-        except sqlite3.IntegrityError:
-            await update.message.reply_text('כתובת דוא\"ל זו כבר קיימת.')
-        
-        conn.close()
-        await show_email_management(update, context)
-    else:
-        await update.message.reply_text('אנא הכנס כתובת דוא\"ל תקינה:')
+    if "@" not in email:
+        await update.message.reply_text("אנא הזינו כתובת מייל תקינה:")
+        return
+    
+    email_lists[user_id].append(email)
+    user_data[user_id]['state'] = 'main_menu'
+    
+    await update.message.reply_text(f"המייל {email} נוסף בהצלחה!")
+    await show_email_list(update, context)
 
-async def send_daily_email(update: Update, context: ContextTypes.DEFAULT_TYPE, query=None):
-    user_id = update.effective_user.id
-    
-    conn = sqlite3.connect('car_jobs.db')
-    c = conn.cursor()
-    c.execute('SELECT email FROM emails WHERE user_id = ?', (user_id,))
-    emails = [row[0] for row in c.fetchall()]
-    conn.close()
-    
-    if not emails:
-        message = 'אין כתובות דוא\"ל שמורות. אנא הוסף כתובת דוא\"ל תחילה.'
-        if query:
-            await query.edit_message_text(message)
-        else:
-            await update.message.reply_text(message)
-        return
-    
-    summary = context.user_data.get('daily_summary', '')
-    if not summary:
-        message = 'אין נתונים לשליחה.'
-        if query:
-            await query.edit_message_text(message)
-        else:
-            await update.message.reply_text(message)
-        return
+async def send_emails(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Send daily summary via email"""
+    if user_id not in email_lists or not email_lists[user_id]:
+        return False
     
     try:
-        # Send email
+        summary = user_data[user_id].get('daily_summary', '')
+        if not summary:
+            return False
+        
+        # Create email
         msg = MIMEMultipart()
         msg['From'] = EMAIL_USER
-        msg['To'] = ', '.join(emails)
-        msg['Subject'] = f"סיכום יום עבודה - {datetime.now().strftime('%d/%m/%Y')}"
+        msg['Subject'] = f"סיכום יום - {datetime.now(IST).strftime('%d/%m/%Y')}"
         
-        msg.attach(MIMEText(summary, 'plain', 'utf-8'))
+        body = summary
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
         
+        # Send to all emails
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(EMAIL_USER, EMAIL_PASSWORD)
-        server.send_message(msg)
+        
+        for email in email_lists[user_id]:
+            msg['To'] = email
+            server.send_message(msg)
+            del msg['To']
+        
         server.quit()
+        return True
         
-        # Clear today's data after successful email
-        conn = sqlite3.connect('car_jobs.db')
-        c = conn.cursor()
-        today = datetime.now().strftime('%Y-%m-%d')
-        c.execute('DELETE FROM cars WHERE user_id = ? AND date = ?', (user_id, today))
-        conn.commit()
-        conn.close()
-        
-        USER_STATES[user_id] = UserState.MAIN_MENU
-        
-        success_message = f'✅ דוא\"ל נשלח בהצלחה ל-{len(emails)} כתובות!\nיום עבודה הסתיים והנתונים נמחקו.'
-        
-        if query:
-            await query.edit_message_text(success_message)
-            await context.bot.send_message(
-                chat_id=user_id,
-                text='בחר פעולה:',
-                reply_markup=get_main_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                success_message,
-                reply_markup=get_main_keyboard()
-            )
-            
     except Exception as e:
-        error_message = f'❌ שגיאה בשליחת דוא\"ל: {str(e)}'
-        if query:
-            await query.edit_message_text(error_message)
+        logger.error(f"Email sending failed: {e}")
+        return False
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    
+    await query.answer()
+    
+    if data.startswith("delete_"):
+        # Delete job
+        job_index = int(data.split("_")[1])
+        today = get_today_key()
+        
+        if today in daily_jobs[user_id] and job_index < len(daily_jobs[user_id][today]):
+            deleted_job = daily_jobs[user_id][today].pop(job_index)
+            
+            # Update monthly stats
+            month = get_month_key()
+            job_key = list(JOB_TYPES.keys())[list(JOB_TYPES.values()).index(deleted_job['job_type'])]
+            monthly_stats[user_id][month] -= 1
+            monthly_stats[user_id][f"{month}_{job_key}"] -= 1
+            
+            await query.edit_message_text("המשימה נמחקה בהצלחה!")
+            
+        # Return to main menu
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await context.bot.send_message(user_id, "חזרה לתפריט הראשי:", reply_markup=reply_markup)
+        
+    elif data.startswith("delete_email_"):
+        # Delete email
+        email_index = int(data.split("_")[2])
+        if email_index < len(email_lists[user_id]):
+            email_lists[user_id].pop(email_index)
+        await show_email_list_callback(query, context)
+        
+    elif data == "add_email":
+        user_data[user_id]['state'] = 'waiting_email'
+        await query.edit_message_text("הזינו כתובת מייל חדשה:")
+        
+    elif data == "send_emails":
+        success = await send_emails(user_id, context)
+        if success:
+            # Clear today's jobs
+            today = get_today_key()
+            if today in daily_jobs[user_id]:
+                del daily_jobs[user_id][today]
+            
+            await query.edit_message_text("המיילים נשלחו בהצלחה! יום חדש התחיל!")
         else:
-            await update.message.reply_text(error_message)
+            await query.edit_message_text("שגיאה בשליחת המיילים.")
+        
+        # Return to main menu
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await context.bot.send_message(user_id, "חזרה לתפריט הראשי:", reply_markup=reply_markup)
+        
+    elif data == "main_menu":
+        keyboard = [
+            ["רכב חדש", "סיום יום"],
+            ["עריכה/מחיקה", "סטטיסטיקה חודשית"]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await query.edit_message_text("תפריט ראשי:")
+        await context.bot.send_message(user_id, "אנא בחרו פעולה:", reply_markup=reply_markup)
+
+async def show_email_list_callback(query, context):
+    """Show email list in callback context"""
+    user_id = query.from_user.id
+    
+    if not email_lists[user_id]:
+        await query.edit_message_text("אין מיילים ברשימה.")
+        return
+    
+    keyboard = []
+    for i, email in enumerate(email_lists[user_id]):
+        keyboard.append([InlineKeyboardButton(f"🗑 מחק {email}", callback_data=f"delete_email_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("➕ הוסף מייל חדש", callback_data="add_email")])
+    keyboard.append([InlineKeyboardButton("📧 שלח לכולם", callback_data="send_emails")])
+    keyboard.append([InlineKeyboardButton("חזור לתפריט", callback_data="main_menu")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    emails_text = "📧 רשימת מיילים:\n" + "\n".join(email_lists[user_id])
+    await query.edit_message_text(emails_text, reply_markup=reply_markup)
 
 def main():
-    # Initialize database
-    init_db()
-    
+    """Main function to run the bot"""
     # Create application
-    application = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     
     # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
     
-    # Run the bot
-    application.run_polling()
+    # Message handlers
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.Regex("^(משימת שינוע|משימת טרמפ|משימת סרק|משימת מוסך|משימת טסט)$"), handle_job_type))
+    app.add_handler(MessageHandler(filters.Regex("^(שלח במייל|דלג)$"), handle_email_choice))
+    
+    # Start the bot
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
